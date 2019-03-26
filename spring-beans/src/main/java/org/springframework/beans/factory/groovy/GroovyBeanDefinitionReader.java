@@ -396,8 +396,8 @@ public class GroovyBeanDefinitionReader extends AbstractBeanDefinitionReader imp
 			return new RuntimeBeanReference(refName, parentRef);
 		}
 		else if (this.namespaces.containsKey(name) && args.length > 0 && args[0] instanceof Closure) {
-			GroovyDynamicElementReader reader = createDynamicElementReader(name);
-			reader.invokeMethod("doCall", args);
+			//GroovyDynamicElementReader reader = createDynamicElementReader(name);
+			//reader.invokeMethod("doCall", args);
 		}
 		else if (args.length > 0 && args[0] instanceof Closure) {
 			// abstract bean definition
@@ -654,7 +654,8 @@ public class GroovyBeanDefinitionReader extends AbstractBeanDefinitionReader imp
 		}
 		else {
 			if (this.namespaces.containsKey(name)) {
-				return createDynamicElementReader(name);
+				//return createDynamicElementReader(name);
+				return null;
 			}
 			if (getRegistry().containsBeanDefinition(name)) {
 				GroovyBeanDefinitionWrapper beanDefinition = (GroovyBeanDefinitionWrapper)
@@ -688,7 +689,7 @@ public class GroovyBeanDefinitionReader extends AbstractBeanDefinitionReader imp
 			}
 		}
 	}
-
+	/*
 	private GroovyDynamicElementReader createDynamicElementReader(String namespace) {
 		XmlReaderContext readerContext = this.groovyDslXmlBeanDefinitionReader.createReaderContext(new DescriptiveResource(
 			"Groovy"));
@@ -706,6 +707,7 @@ public class GroovyBeanDefinitionReader extends AbstractBeanDefinitionReader imp
 			}
 		};
 	}
+	*/
 
 
 	/**
