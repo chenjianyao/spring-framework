@@ -27,6 +27,14 @@ import org.springframework.core.annotation.AliasFor;
 import org.springframework.stereotype.Component;
 
 /**
+ * 控制器增强。使用<component>注解，使用<context:component-scan>扫描时也能扫描到
+ * @ControllerAdvice是一个@Component，用于定义@ExceptionHandler，@InitBinder和@ModelAttribute方法，适用于所有使用@RequestMapping方法。
+ * Spring4之前，@ControllerAdvice在同一调度的Servlet中协助所有控制器。Spring4已经改变：@ControllerAdvice支持配置控制器的子集，而默认的行为仍然可以利用。
+ * 在Spring4中， @ControllerAdvice通过annotations(), basePackageClasses(), basePackages() 方法定制用于选择控制器子集。
+ * 即把@ControllerAdvice注解内部使用@ExceptionHandler、@InitBinder、@ModelAttribute注解的方法应用到所有的 @RequestMapping注解的方法。
+ * 非常简单，不过只有当使用@ExceptionHandler最有用，另外两个用处不大。
+ * 
+ * <br>
  * Specialization of {@link Component @Component} for classes that declare
  * {@link ExceptionHandler @ExceptionHandler}, {@link InitBinder @InitBinder}, or
  * {@link ModelAttribute @ModelAttribute} methods to be shared across

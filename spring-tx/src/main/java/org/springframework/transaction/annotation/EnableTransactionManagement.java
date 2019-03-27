@@ -27,6 +27,15 @@ import org.springframework.context.annotation.Import;
 import org.springframework.core.Ordered;
 
 /**
+ * @EnableXXX原理：注解上有个XXXRegistrar，或通过XXXSelector引入XXXRegistrar，XXXRegistrar实现了 
+	ImportBeanDefinitionRegistrar的registerBeanDefinitions方法，给容器注册XXXCreator。这个Creator实现了后置处理器， 
+	后置处理器在对象创建以后，包装对象，返回一个代理对象，代理对象执行方法利用拦截器链进行调用
+
+ * <br/>
+ * 
+ * 
+ * 
+ * 
  * Enables Spring's annotation-driven transaction management capability, similar to
  * the support found in Spring's {@code <tx:*>} XML namespace. To be used on
  * {@link org.springframework.context.annotation.Configuration @Configuration}

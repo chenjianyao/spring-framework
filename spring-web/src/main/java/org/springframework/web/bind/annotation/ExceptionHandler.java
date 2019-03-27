@@ -105,8 +105,12 @@ import java.lang.annotation.Target;
 public @interface ExceptionHandler {
 
 	/**
+	 * <p>
+	 * 注解方法处理的异常类,为空默认所有异常
+	 * </p>
 	 * Exceptions handled by the annotated method. If empty, will default to any
 	 * exceptions listed in the method argument list.
+	 * 
 	 */
 	Class<? extends Throwable>[] value() default {};
 
