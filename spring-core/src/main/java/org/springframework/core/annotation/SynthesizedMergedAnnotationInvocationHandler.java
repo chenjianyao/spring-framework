@@ -41,7 +41,6 @@ import org.springframework.util.ReflectionUtils;
  * @since 5.2
  * @param <A> the annotation type
  * @see Annotation
- * @see AnnotationAttributeExtractor
  * @see AnnotationUtils#synthesizeAnnotation(Annotation, AnnotatedElement)
  */
 final class SynthesizedMergedAnnotationInvocationHandler<A extends Annotation> implements InvocationHandler {
@@ -176,7 +175,7 @@ final class SynthesizedMergedAnnotationInvocationHandler<A extends Annotation> i
 		Class<?> type = ClassUtils.resolvePrimitiveIfNecessary(method.getReturnType());
 		return this.annotation.getValue(name, type).orElseThrow(
 				() -> new NoSuchElementException("No value found for attribute named '" + name +
-						"' in merged annotation " + this.annotation.getType()));
+						"' in merged annotation " + this.annotation.getType().getName()));
 	}
 
 	@SuppressWarnings("unchecked")
