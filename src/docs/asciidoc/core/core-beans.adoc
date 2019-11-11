@@ -8743,7 +8743,7 @@ This approach simplifies container instantiation, as only one class needs to be 
 with, rather than requiring you to remember a potentially large number of
 `@Configuration` classes during construction.
 
-TIP: As of Spring Framework 4.2, `@Import` also supports references regular component
+TIP: As of Spring Framework 4.2, `@Import` also supports references to regular component
 classes, analogous to the `AnnotationConfigApplicationContext.register` method.
 This is particularly useful if you want to avoid component scanning, by using a few
 configuration classes as entry points to explicitly define all your components.
@@ -11055,7 +11055,7 @@ file extension).
 .Add a
 `META-INF/ra.xml` deployment descriptor (as shown in the {api-spring-framework}/jca/context/SpringContextResourceAdapter.html[javadoc for `SpringContextResourceAdapter`])
 and the corresponding Spring XML bean definition file(s) (typically
-`META-INF/applicationContext.xml).
+`META-INF/applicationContext.xml`).
 . Drop the resulting RAR file into your
 application server's deployment directory.
 

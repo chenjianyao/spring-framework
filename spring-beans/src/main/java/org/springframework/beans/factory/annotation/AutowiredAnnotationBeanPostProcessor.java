@@ -256,7 +256,7 @@ public class AutowiredAnnotationBeanPostProcessor extends InstantiationAwareBean
 	public Constructor<?>[] determineCandidateConstructors(Class<?> beanClass, final String beanName)
 			throws BeanCreationException {
 
-		// Let's check for lookup methods here..
+		// Let's check for lookup methods here...
 		if (!this.lookupMethodsChecked.contains(beanName)) {
 			if (AnnotationUtils.isCandidateClass(beanClass, Lookup.class)) {
 				try {
@@ -268,7 +268,8 @@ public class AutowiredAnnotationBeanPostProcessor extends InstantiationAwareBean
 								Assert.state(this.beanFactory != null, "No BeanFactory available");
 								LookupOverride override = new LookupOverride(method, lookup.value());
 								try {
-									RootBeanDefinition mbd = (RootBeanDefinition) this.beanFactory.getMergedBeanDefinition(beanName);
+									RootBeanDefinition mbd = (RootBeanDefinition)
+											this.beanFactory.getMergedBeanDefinition(beanName);
 									mbd.getMethodOverrides().addOverride(override);
 								}
 								catch (NoSuchBeanDefinitionException ex) {
@@ -695,10 +696,10 @@ public class AutowiredAnnotationBeanPostProcessor extends InstantiationAwareBean
 				arguments = resolveCachedArguments(beanName);
 			}
 			else {
-				Class<?>[] paramTypes = method.getParameterTypes();
-				arguments = new Object[paramTypes.length];
-				DependencyDescriptor[] descriptors = new DependencyDescriptor[paramTypes.length];
-				Set<String> autowiredBeans = new LinkedHashSet<>(paramTypes.length);
+				int argumentCount = method.getParameterCount();
+				arguments = new Object[argumentCount];
+				DependencyDescriptor[] descriptors = new DependencyDescriptor[argumentCount];
+				Set<String> autowiredBeans = new LinkedHashSet<>(argumentCount);
 				Assert.state(beanFactory != null, "No BeanFactory available");
 				TypeConverter typeConverter = beanFactory.getTypeConverter();
 				for (int i = 0; i < arguments.length; i++) {
@@ -723,8 +724,9 @@ public class AutowiredAnnotationBeanPostProcessor extends InstantiationAwareBean
 						if (arguments != null) {
 							DependencyDescriptor[] cachedMethodArguments = Arrays.copyOf(descriptors, arguments.length);
 							registerDependentBeans(beanName, autowiredBeans);
-							if (autowiredBeans.size() == paramTypes.length) {
+							if (autowiredBeans.size() == argumentCount) {
 								Iterator<String> it = autowiredBeans.iterator();
+								Class<?>[] paramTypes = method.getParameterTypes();
 								for (int i = 0; i < paramTypes.length; i++) {
 									String autowiredBeanName = it.next();
 									if (beanFactory.containsBean(autowiredBeanName) &&
