@@ -1,0 +1,105 @@
+前提：
+    1:掌握Quartz原理
+
+
+目标:
+    2:掌握Spring集成Quartz原理
+
+
+
+Quartz:
+1、定义SchedulerFactory
+2、获取Scheduler
+3、定义JobDetail
+4、定义Trigger
+5、设置Scheduler
+6、启动Scheduler
+
+Spring+Quartz:
+集成方式:
+1:定义工作类配置（2种方式）
+第一种方式：
+<bean name="exampleJob" class="org.springframework.scheduling.quartz.JobDetailFactoryBean">
+    <property name="jobClass" value="example.ExampleJob"/>
+    <property name="jobDataAsMap">
+        <map>
+            <entry key="timeout" value="5"/>
+        </map>
+    </property>
+</bean>
+
+public class ExampleJob extends QuartzJobBean {
+    private int timeout;
+    /**
+     * Setter called after the ExampleJob is instantiated
+     * with the value from the JobDetailFactoryBean (5)
+     */
+    public void setTimeout(int timeout) {
+        this.timeout = timeout;
+    }
+    protected void executeInternal(JobExecutionContext ctx) throws JobExecutionException {
+        // do the actual work
+    }
+}
+
+第二种方式:
+<bean id="jobDetail" class="org.springframework.scheduling.quartz.MethodInvokingJobDetailFactoryBean">
+    <property name="targetObject" ref="exampleBusinessObject"/>
+    <property name="targetMethod" value="doIt"/>
+    <property name="concurrent" value="false"/>
+</bean>
+public class ExampleBusinessObject {
+    // properties and collaborators
+    public void doIt() {
+        // do the actual work
+    }
+}
+<bean id="exampleBusinessObject" class="examples.ExampleBusinessObject"/>
+
+
+2:定义触发器配置（2种方式）
+第一种方式:
+<bean id="simpleTrigger" class="org.springframework.scheduling.quartz.SimpleTriggerFactoryBean">
+    <!-- see the example of method invoking job above -->
+    <property name="jobDetail" ref="jobDetail"/>
+    <!-- 10 seconds -->
+    <property name="startDelay" value="10000"/>
+    <!-- repeat every 50 seconds -->
+    <property name="repeatInterval" value="50000"/>
+</bean>
+
+第二种方式:
+<bean id="cronTrigger" class="org.springframework.scheduling.quartz.CronTriggerFactoryBean">
+    <property name="jobDetail" ref="exampleJob"/>
+    <!-- run every morning at 6 AM -->
+    <property name="cronExpression" value="0 0 6 * * ?"/>
+</bean>
+
+
+3:定义调度工厂
+<bean class="org.springframework.scheduling.quartz.SchedulerFactoryBean">
+    <property name="triggers">
+        <list>
+            <ref bean="cronTrigger"/>
+            <ref bean="simpleTrigger"/>
+        </list>
+    </property>
+</bean>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

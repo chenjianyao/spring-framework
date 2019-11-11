@@ -81,6 +81,11 @@ import org.springframework.util.ObjectUtils;
 import org.springframework.util.StringUtils;
 
 /**
+ * <p><pre>Smile注释</pre>
+ * DefaultListableBeanFactory 是整个spring ioc的始祖，研究透它的前生今世对我们理解spring ioc的概念有着重要的作用。
+ * 
+ * </p>
+ * 
  * Spring's default implementation of the {@link ConfigurableListableBeanFactory}
  * and {@link BeanDefinitionRegistry} interfaces: a full-fledged bean factory
  * based on bean definition metadata, extensible through post-processors.

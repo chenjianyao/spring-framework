@@ -520,6 +520,20 @@ public class SchedulerFactoryBean extends SchedulerAccessor implements FactoryBe
 	 * @return the initialized SchedulerFactory
 	 */
 	private SchedulerFactory prepareSchedulerFactory() throws SchedulerException, IOException {
+		/**
+		 * 前提:
+		 * Scheduler调度程序、SchedulerFactory调度程序工厂
+		 * Scheduler调度程序
+		 * org.quartz.Scheduler这是Quartz 调度程序的主要接口。 
+		 * Scheduler维护了一个JobDetails 和Triggers的注册表。一旦在Scheduler注册过了，当定时任务触发时间一到，调度程序就会负责执行预先定义的Job。
+
+		 * 初始化Quartz中SchedulerFactory调度程序工厂
+		 * SchedulerFactory 接口有 StdSchedulerFactory 和 DirectSchedulerFactory 两个实现类
+		 * 区别:
+		 * 
+		 */
+		
+		
 		SchedulerFactory schedulerFactory = this.schedulerFactory;
 		if (schedulerFactory == null) {
 			// Create local SchedulerFactory instance (typically a StdSchedulerFactory)
