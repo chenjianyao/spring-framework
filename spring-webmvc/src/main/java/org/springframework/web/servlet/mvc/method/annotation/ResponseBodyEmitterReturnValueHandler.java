@@ -1,5 +1,5 @@
 /*
- * Copyright 2002-2019 the original author or authors.
+ * Copyright 2002-2023 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,22 +17,25 @@
 package org.springframework.web.servlet.mvc.method.annotation;
 
 import java.io.IOException;
-import java.io.OutputStream;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 import java.util.function.Consumer;
 
-import javax.servlet.ServletRequest;
-import javax.servlet.http.HttpServletResponse;
+import jakarta.servlet.ServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
 
 import org.springframework.core.MethodParameter;
 import org.springframework.core.ReactiveAdapterRegistry;
 import org.springframework.core.ResolvableType;
 import org.springframework.core.task.TaskExecutor;
 import org.springframework.http.HttpHeaders;
-import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageConverter;
+import org.springframework.http.converter.StringHttpMessageConverter;
+import org.springframework.http.server.DelegatingServerHttpResponse;
 import org.springframework.http.server.ServerHttpResponse;
 import org.springframework.http.server.ServletServerHttpResponse;
 import org.springframework.lang.Nullable;
@@ -46,7 +49,7 @@ import org.springframework.web.method.support.HandlerMethodReturnValueHandler;
 import org.springframework.web.method.support.ModelAndViewContainer;
 
 /**
- * Handler for return values of type {@link ResponseBodyEmitter} and sub-classes
+ * Handler for return values of type {@link ResponseBodyEmitter} and subclasses
  * such as {@link SseEmitter} including the same types wrapped with
  * {@link ResponseEntity}.
  *
@@ -58,7 +61,7 @@ import org.springframework.web.method.support.ModelAndViewContainer;
  */
 public class ResponseBodyEmitterReturnValueHandler implements HandlerMethodReturnValueHandler {
 
-	private final List<HttpMessageConverter<?>> messageConverters;
+	private final List<HttpMessageConverter<?>> sseMessageConverters;
 
 	private final ReactiveTypeHandler reactiveHandler;
 
@@ -71,7 +74,7 @@ public class ResponseBodyEmitterReturnValueHandler implements HandlerMethodRetur
 	 */
 	public ResponseBodyEmitterReturnValueHandler(List<HttpMessageConverter<?>> messageConverters) {
 		Assert.notEmpty(messageConverters, "HttpMessageConverter List must not be empty");
-		this.messageConverters = messageConverters;
+		this.sseMessageConverters = initSseConverters(messageConverters);
 		this.reactiveHandler = new ReactiveTypeHandler();
 	}
 
@@ -87,8 +90,20 @@ public class ResponseBodyEmitterReturnValueHandler implements HandlerMethodRetur
 			ReactiveAdapterRegistry registry, TaskExecutor executor, ContentNegotiationManager manager) {
 
 		Assert.notEmpty(messageConverters, "HttpMessageConverter List must not be empty");
-		this.messageConverters = messageConverters;
+		this.sseMessageConverters = initSseConverters(messageConverters);
 		this.reactiveHandler = new ReactiveTypeHandler(registry, executor, manager);
+	}
+
+	private static List<HttpMessageConverter<?>> initSseConverters(List<HttpMessageConverter<?>> converters) {
+		for (HttpMessageConverter<?> converter : converters) {
+			if (converter.canWrite(String.class, MediaType.TEXT_PLAIN)) {
+				return converters;
+			}
+		}
+		List<HttpMessageConverter<?>> result = new ArrayList<>(converters.size() + 1);
+		result.add(new StringHttpMessageConverter(StandardCharsets.UTF_8));
+		result.addAll(converters);
+		return result;
 	}
 
 
@@ -116,9 +131,8 @@ public class ResponseBodyEmitterReturnValueHandler implements HandlerMethodRetur
 		Assert.state(response != null, "No HttpServletResponse");
 		ServerHttpResponse outputMessage = new ServletServerHttpResponse(response);
 
-		if (returnValue instanceof ResponseEntity) {
-			ResponseEntity<?> responseEntity = (ResponseEntity<?>) returnValue;
-			response.setStatus(responseEntity.getStatusCodeValue());
+		if (returnValue instanceof ResponseEntity<?> responseEntity) {
+			response.setStatus(responseEntity.getStatusCode().value());
 			outputMessage.getHeaders().putAll(responseEntity.getHeaders());
 			returnValue = responseEntity.getBody();
 			returnType = returnType.nested();
@@ -133,8 +147,8 @@ public class ResponseBodyEmitterReturnValueHandler implements HandlerMethodRetur
 		Assert.state(request != null, "No ServletRequest");
 
 		ResponseBodyEmitter emitter;
-		if (returnValue instanceof ResponseBodyEmitter) {
-			emitter = (ResponseBodyEmitter) returnValue;
+		if (returnValue instanceof ResponseBodyEmitter responseBodyEmitter) {
+			emitter = responseBodyEmitter;
 		}
 		else {
 			emitter = this.reactiveHandler.handleValue(returnValue, returnType, mavContainer, webRequest);
@@ -157,10 +171,17 @@ public class ResponseBodyEmitterReturnValueHandler implements HandlerMethodRetur
 		// Headers will be flushed at the first write
 		outputMessage = new StreamingServletServerHttpResponse(outputMessage);
 
-		DeferredResult<?> deferredResult = new DeferredResult<>(emitter.getTimeout());
-		WebAsyncUtils.getAsyncManager(webRequest).startDeferredResultProcessing(deferredResult, mavContainer);
+		HttpMessageConvertingHandler handler;
+		try {
+			DeferredResult<?> deferredResult = new DeferredResult<>(emitter.getTimeout());
+			WebAsyncUtils.getAsyncManager(webRequest).startDeferredResultProcessing(deferredResult, mavContainer);
+			handler = new HttpMessageConvertingHandler(outputMessage, deferredResult);
+		}
+		catch (Throwable ex) {
+			emitter.initializeWithError(ex);
+			throw ex;
+		}
 
-		HttpMessageConvertingHandler handler = new HttpMessageConvertingHandler(outputMessage, deferredResult);
 		emitter.initialize(handler);
 	}
 
@@ -182,14 +203,22 @@ public class ResponseBodyEmitterReturnValueHandler implements HandlerMethodRetur
 		@Override
 		public void send(Object data, @Nullable MediaType mediaType) throws IOException {
 			sendInternal(data, mediaType);
+			this.outputMessage.flush();
+		}
+
+		@Override
+		public void send(Set<ResponseBodyEmitter.DataWithMediaType> items) throws IOException {
+			for (ResponseBodyEmitter.DataWithMediaType item : items) {
+				sendInternal(item.getData(), item.getMediaType());
+			}
+			this.outputMessage.flush();
 		}
 
 		@SuppressWarnings("unchecked")
 		private <T> void sendInternal(T data, @Nullable MediaType mediaType) throws IOException {
-			for (HttpMessageConverter<?> converter : ResponseBodyEmitterReturnValueHandler.this.messageConverters) {
+			for (HttpMessageConverter<?> converter : ResponseBodyEmitterReturnValueHandler.this.sseMessageConverters) {
 				if (converter.canWrite(data.getClass(), mediaType)) {
 					((HttpMessageConverter<T>) converter).write(data, mediaType, this.outputMessage);
-					this.outputMessage.flush();
 					return;
 				}
 			}
@@ -233,20 +262,13 @@ public class ResponseBodyEmitterReturnValueHandler implements HandlerMethodRetur
 	 * Wrap to silently ignore header changes HttpMessageConverter's that would
 	 * otherwise cause HttpHeaders to raise exceptions.
 	 */
-	private static class StreamingServletServerHttpResponse implements ServerHttpResponse {
-
-		private final ServerHttpResponse delegate;
+	private static class StreamingServletServerHttpResponse extends DelegatingServerHttpResponse {
 
 		private final HttpHeaders mutableHeaders = new HttpHeaders();
 
 		public StreamingServletServerHttpResponse(ServerHttpResponse delegate) {
-			this.delegate = delegate;
+			super(delegate);
 			this.mutableHeaders.putAll(delegate.getHeaders());
-		}
-
-		@Override
-		public void setStatusCode(HttpStatus status) {
-			this.delegate.setStatusCode(status);
 		}
 
 		@Override
@@ -254,20 +276,6 @@ public class ResponseBodyEmitterReturnValueHandler implements HandlerMethodRetur
 			return this.mutableHeaders;
 		}
 
-		@Override
-		public OutputStream getBody() throws IOException {
-			return this.delegate.getBody();
-		}
-
-		@Override
-		public void flush() throws IOException {
-			this.delegate.flush();
-		}
-
-		@Override
-		public void close() {
-			this.delegate.close();
-		}
 	}
 
 }

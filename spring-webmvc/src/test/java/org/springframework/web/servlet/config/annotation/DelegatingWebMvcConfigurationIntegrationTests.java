@@ -1,5 +1,5 @@
 /*
- * Copyright 2002-2019 the original author or authors.
+ * Copyright 2002-2024 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -25,7 +25,6 @@ import org.springframework.context.ConfigurableApplicationContext;
 import org.springframework.context.annotation.AnnotationConfigUtils;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.convert.ConversionService;
-import org.springframework.mock.web.test.MockServletContext;
 import org.springframework.util.PathMatcher;
 import org.springframework.validation.Validator;
 import org.springframework.web.accept.ContentNegotiationManager;
@@ -33,6 +32,7 @@ import org.springframework.web.context.support.GenericWebApplicationContext;
 import org.springframework.web.servlet.handler.AbstractHandlerMapping;
 import org.springframework.web.servlet.mvc.method.annotation.RequestMappingHandlerAdapter;
 import org.springframework.web.servlet.mvc.method.annotation.RequestMappingHandlerMapping;
+import org.springframework.web.testfixture.servlet.MockServletContext;
 import org.springframework.web.util.UrlPathHelper;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -43,12 +43,12 @@ import static org.mockito.Mockito.mock;
  *
  * @author Stephane Nicoll
  */
-public class DelegatingWebMvcConfigurationIntegrationTests {
+class DelegatingWebMvcConfigurationIntegrationTests {
 
 	private ConfigurableApplicationContext context;
 
 	@AfterEach
-	public void closeContext() {
+	void closeContext() {
 		if (this.context != null) {
 			this.context.close();
 		}
@@ -181,6 +181,7 @@ public class DelegatingWebMvcConfigurationIntegrationTests {
 		this.context = webContext;
 	}
 
+
 	@Configuration
 	static class ViewControllerConfiguration implements WebMvcConfigurer {
 
@@ -188,7 +189,15 @@ public class DelegatingWebMvcConfigurationIntegrationTests {
 		public void addViewControllers(ViewControllerRegistry registry) {
 			registry.addViewController("/test");
 		}
+
+		@Override
+		public void configurePathMatch(PathMatchConfigurer configurer) {
+			// tests need to check the "mvcPathMatcher" and "mvcUrlPathHelper" instances
+			configurer.setPatternParser(null);
+		}
+
 	}
+
 
 	@Configuration
 	static class ResourceHandlerConfiguration implements WebMvcConfigurer {
@@ -197,5 +206,13 @@ public class DelegatingWebMvcConfigurationIntegrationTests {
 		public void addResourceHandlers(ResourceHandlerRegistry registry) {
 			registry.addResourceHandler("/resources/**");
 		}
+
+		@Override
+		public void configurePathMatch(PathMatchConfigurer configurer) {
+			// tests need to check the "mvcPathMatcher" and "mvcUrlPathHelper" instances
+			configurer.setPatternParser(null);
+		}
+
 	}
+
 }

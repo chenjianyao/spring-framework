@@ -1,5 +1,5 @@
 /*
- * Copyright 2002-2019 the original author or authors.
+ * Copyright 2002-2023 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -24,9 +24,9 @@ import reactor.core.publisher.Mono;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
-import org.springframework.http.server.reactive.bootstrap.HttpServer;
 import org.springframework.lang.Nullable;
 import org.springframework.web.client.RestTemplate;
+import org.springframework.web.testfixture.http.server.reactive.bootstrap.HttpServer;
 import org.springframework.web.util.pattern.PathPattern;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -90,7 +90,11 @@ class NestedRouteIntegrationTests extends AbstractRouterFunctionIntegrationTests
 				restTemplate.getForEntity("http://localhost:" + port + "/1/2/3", String.class);
 
 		assertThat(result.getStatusCode()).isEqualTo(HttpStatus.OK);
-		assertThat(result.getBody()).isEqualTo("/{foo}/{bar}/{baz}\n{foo=1, bar=2, baz=3}");
+		String body = result.getBody();
+		assertThat(body).startsWith("/{foo}/{bar}/{baz}");
+		assertThat(body).contains("foo=1");
+		assertThat(body).contains("bar=2");
+		assertThat(body).contains("baz=3");
 	}
 
 	// SPR-16868

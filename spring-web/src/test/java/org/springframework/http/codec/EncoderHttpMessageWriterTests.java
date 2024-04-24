@@ -1,5 +1,5 @@
 /*
- * Copyright 2002-2019 the original author or authors.
+ * Copyright 2002-2024 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -33,14 +33,16 @@ import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.test.StepVerifier;
 
+import org.springframework.core.ResolvableType;
 import org.springframework.core.codec.CharSequenceEncoder;
+import org.springframework.core.codec.Encoder;
 import org.springframework.core.io.buffer.DataBuffer;
 import org.springframework.core.io.buffer.DefaultDataBufferFactory;
 import org.springframework.http.MediaType;
-import org.springframework.mock.http.server.reactive.test.MockServerHttpResponse;
 import org.springframework.util.MimeType;
 import org.springframework.util.MimeTypeUtils;
 import org.springframework.util.ReflectionUtils;
+import org.springframework.web.testfixture.http.server.reactive.MockServerHttpResponse;
 
 import static java.nio.charset.StandardCharsets.ISO_8859_1;
 import static java.nio.charset.StandardCharsets.UTF_8;
@@ -53,7 +55,7 @@ import static org.springframework.http.MediaType.TEXT_PLAIN;
 import static org.springframework.http.MediaType.TEXT_XML;
 
 /**
- * Unit tests for {@link EncoderHttpMessageWriter}.
+ * Tests for {@link EncoderHttpMessageWriter}.
  *
  * @author Rossen Stoyanchev
  * @author Brian Clozel
@@ -155,9 +157,9 @@ class EncoderHttpMessageWriterTests {
 
 	@Test
 	void setContentLengthForMonoBody() {
-		DefaultDataBufferFactory factory = new DefaultDataBufferFactory();
+		DefaultDataBufferFactory factory = DefaultDataBufferFactory.sharedInstance;
 		DataBuffer buffer = factory.wrap("body".getBytes(StandardCharsets.UTF_8));
-		configureEncoder(buffer, MimeTypeUtils.TEXT_PLAIN);
+		configureEncoder(Flux.just(buffer), MimeTypeUtils.TEXT_PLAIN);
 		HttpMessageWriter<String> writer = new EncoderHttpMessageWriter<>(this.encoder);
 		writer.write(Mono.just("body"), forClass(String.class), TEXT_PLAIN, this.response, NO_HINTS).block();
 
@@ -180,7 +182,7 @@ class EncoderHttpMessageWriterTests {
 		configureEncoder(MimeTypeUtils.TEXT_PLAIN);
 		HttpMessageWriter<String> writer = new EncoderHttpMessageWriter<>(this.encoder);
 		writer.write(Mono.empty(), forClass(String.class), TEXT_PLAIN, this.response, NO_HINTS).block();
-		StepVerifier.create(this.response.getBody()).expectComplete();
+		StepVerifier.create(this.response.getBody()).verifyComplete();
 		assertThat(this.response.getHeaders().getContentLength()).isEqualTo(0);
 	}
 
@@ -188,15 +190,39 @@ class EncoderHttpMessageWriterTests {
 	void isStreamingMediaType() throws InvocationTargetException, IllegalAccessException {
 		configureEncoder(TEXT_HTML);
 		MediaType streamingMediaType = new MediaType(TEXT_PLAIN, Collections.singletonMap("streaming", "true"));
-		given(this.encoder.getStreamingMediaTypes()).willReturn(Arrays.asList(streamingMediaType));
+		given(this.encoder.getStreamingMediaTypes()).willReturn(List.of(streamingMediaType));
 
 		HttpMessageWriter<String> writer = new EncoderHttpMessageWriter<>(this.encoder);
 		Method method = ReflectionUtils.findMethod(writer.getClass(), "isStreamingMediaType", MediaType.class);
 		ReflectionUtils.makeAccessible(method);
 
-		assertThat((boolean) (Boolean) method.invoke(writer, streamingMediaType)).isTrue();
-		assertThat((boolean) (Boolean) method.invoke(writer, new MediaType(TEXT_PLAIN, Collections.singletonMap("streaming", "false")))).isFalse();
-		assertThat((boolean) (Boolean) method.invoke(writer, TEXT_HTML)).isFalse();
+		assertThat((Boolean) method.invoke(writer, streamingMediaType)).isTrue();
+		assertThat((Boolean) method.invoke(writer, new MediaType(TEXT_PLAIN, Collections.singletonMap("streaming", "false")))).isFalse();
+		assertThat((Boolean) method.invoke(writer, TEXT_HTML)).isFalse();
+	}
+
+	@Test
+	public void noContentTypeWithEmptyBody() {
+		Encoder<CharSequence> encoder = CharSequenceEncoder.textPlainOnly();
+		HttpMessageWriter<CharSequence> writer = new EncoderHttpMessageWriter<>(encoder);
+		Mono<Void> writerMono = writer.write(Mono.empty(), ResolvableType.forClass(String.class),
+				null, this.response, NO_HINTS);
+
+		StepVerifier.create(writerMono)
+				.verifyComplete();
+		assertThat(response.getHeaders().getContentType()).isNull();
+	}
+
+	@Test
+	public void zeroContentLengthWithEmptyBody() {
+		Encoder<CharSequence> encoder = CharSequenceEncoder.textPlainOnly();
+		HttpMessageWriter<CharSequence> writer = new EncoderHttpMessageWriter<>(encoder);
+		Mono<Void> writerMono = writer.write(Mono.empty(), ResolvableType.forClass(String.class),
+				null, this.response, NO_HINTS);
+
+		StepVerifier.create(writerMono)
+				.verifyComplete();
+		assertThat(this.response.getHeaders().getContentLength()).isEqualTo(0);
 	}
 
 	private void configureEncoder(MimeType... mimeTypes) {
@@ -208,13 +234,6 @@ class EncoderHttpMessageWriterTests {
 		given(this.encoder.getEncodableMimeTypes()).willReturn(typeList);
 		given(this.encoder.encode(any(), any(), any(), this.mediaTypeCaptor.capture(), any()))
 				.willReturn(encodedStream);
-	}
-
-	private void configureEncoder(DataBuffer dataBuffer, MimeType... mimeTypes) {
-		List<MimeType> typeList = Arrays.asList(mimeTypes);
-		given(this.encoder.getEncodableMimeTypes()).willReturn(typeList);
-		given(this.encoder.encodeValue(any(), any(), any(), this.mediaTypeCaptor.capture(), any()))
-				.willReturn(dataBuffer);
 	}
 
 }

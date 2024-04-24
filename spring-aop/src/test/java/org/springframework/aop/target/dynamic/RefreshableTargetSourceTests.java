@@ -1,5 +1,5 @@
 /*
- * Copyright 2002-2019 the original author or authors.
+ * Copyright 2002-2024 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,22 +18,22 @@ package org.springframework.aop.target.dynamic;
 
 import org.junit.jupiter.api.Test;
 
-import org.springframework.tests.EnabledForTestGroups;
+import org.springframework.core.testfixture.EnabledForTestGroups;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.springframework.tests.TestGroup.PERFORMANCE;
+import static org.springframework.core.testfixture.TestGroup.LONG_RUNNING;
 
 /**
  * @author Rob Harrop
  * @author Chris Beams
  */
-public class RefreshableTargetSourceTests {
+class RefreshableTargetSourceTests {
 
 	/**
 	 * Test what happens when checking for refresh but not refreshing object.
 	 */
 	@Test
-	public void testRefreshCheckWithNonRefresh() throws Exception {
+	void testRefreshCheckWithNonRefresh() throws Exception {
 		CountingRefreshableTargetSource ts = new CountingRefreshableTargetSource();
 		ts.setRefreshCheckDelay(0);
 
@@ -49,7 +49,7 @@ public class RefreshableTargetSourceTests {
 	 * Test what happens when checking for refresh and refresh occurs.
 	 */
 	@Test
-	public void testRefreshCheckWithRefresh() throws Exception {
+	void testRefreshCheckWithRefresh() throws Exception {
 		CountingRefreshableTargetSource ts = new CountingRefreshableTargetSource(true);
 		ts.setRefreshCheckDelay(0);
 
@@ -65,7 +65,7 @@ public class RefreshableTargetSourceTests {
 	 * Test what happens when no refresh occurs.
 	 */
 	@Test
-	public void testWithNoRefreshCheck() throws Exception {
+	void testWithNoRefreshCheck() {
 		CountingRefreshableTargetSource ts = new CountingRefreshableTargetSource(true);
 		ts.setRefreshCheckDelay(-1);
 
@@ -77,7 +77,7 @@ public class RefreshableTargetSourceTests {
 	}
 
 	@Test
-	@EnabledForTestGroups(PERFORMANCE)
+	@EnabledForTestGroups(LONG_RUNNING)
 	public void testRefreshOverTime() throws Exception {
 		CountingRefreshableTargetSource ts = new CountingRefreshableTargetSource(true);
 		ts.setRefreshCheckDelay(100);

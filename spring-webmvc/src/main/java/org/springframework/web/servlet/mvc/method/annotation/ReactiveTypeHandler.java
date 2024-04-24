@@ -1,5 +1,5 @@
 /*
- * Copyright 2002-2019 the original author or authors.
+ * Copyright 2002-2023 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -25,17 +25,19 @@ import java.util.Optional;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
+import io.micrometer.context.ContextSnapshot;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.reactivestreams.Publisher;
 import org.reactivestreams.Subscriber;
 import org.reactivestreams.Subscription;
+import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
 
 import org.springframework.core.MethodParameter;
 import org.springframework.core.ReactiveAdapter;
 import org.springframework.core.ReactiveAdapterRegistry;
 import org.springframework.core.ResolvableType;
-import org.springframework.core.task.SimpleAsyncTaskExecutor;
 import org.springframework.core.task.SyncTaskExecutor;
 import org.springframework.core.task.TaskExecutor;
 import org.springframework.http.MediaType;
@@ -43,6 +45,7 @@ import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.http.server.ServerHttpResponse;
 import org.springframework.lang.Nullable;
 import org.springframework.util.Assert;
+import org.springframework.util.ClassUtils;
 import org.springframework.util.CollectionUtils;
 import org.springframework.util.MimeType;
 import org.springframework.web.HttpMediaTypeNotAcceptableException;
@@ -73,16 +76,19 @@ class ReactiveTypeHandler {
 
 	private static final long STREAMING_TIMEOUT_VALUE = -1;
 
+	private static final MediaType WILDCARD_SUBTYPE_SUFFIXED_BY_NDJSON = MediaType.valueOf("application/*+x-ndjson");
 
-	private static Log logger = LogFactory.getLog(ReactiveTypeHandler.class);
+	private static final boolean isContextPropagationPresent = ClassUtils.isPresent(
+			"io.micrometer.context.ContextSnapshot", ReactiveTypeHandler.class.getClassLoader());
+
+	private static final Log logger = LogFactory.getLog(ReactiveTypeHandler.class);
+
 
 	private final ReactiveAdapterRegistry adapterRegistry;
 
 	private final TaskExecutor taskExecutor;
 
 	private final ContentNegotiationManager contentNegotiationManager;
-
-	private boolean taskExecutorWarning;
 
 
 	public ReactiveTypeHandler() {
@@ -96,9 +102,6 @@ class ReactiveTypeHandler {
 		this.adapterRegistry = registry;
 		this.taskExecutor = executor;
 		this.contentNegotiationManager = manager;
-
-		this.taskExecutorWarning =
-				(executor instanceof SimpleAsyncTaskExecutor || executor instanceof SyncTaskExecutor);
 	}
 
 
@@ -121,8 +124,13 @@ class ReactiveTypeHandler {
 			ModelAndViewContainer mav, NativeWebRequest request) throws Exception {
 
 		Assert.notNull(returnValue, "Expected return value");
-		ReactiveAdapter adapter = this.adapterRegistry.getAdapter(returnValue.getClass());
-		Assert.state(adapter != null, () -> "Unexpected return value: " + returnValue);
+		Class<?> clazz = returnValue.getClass();
+		ReactiveAdapter adapter = this.adapterRegistry.getAdapter(clazz);
+		Assert.state(adapter != null, () -> "Unexpected return value type: " + clazz);
+
+		if (isContextPropagationPresent) {
+			returnValue = ContextSnapshotHelper.writeReactorContext(returnValue);
+		}
 
 		ResolvableType elementType = ResolvableType.forMethodParameter(returnType).getGeneric();
 		Class<?> elementClass = elementType.toClass();
@@ -133,20 +141,18 @@ class ReactiveTypeHandler {
 		if (adapter.isMultiValue()) {
 			if (mediaTypes.stream().anyMatch(MediaType.TEXT_EVENT_STREAM::includes) ||
 					ServerSentEvent.class.isAssignableFrom(elementClass)) {
-				logExecutorWarning(returnType);
 				SseEmitter emitter = new SseEmitter(STREAMING_TIMEOUT_VALUE);
 				new SseEmitterSubscriber(emitter, this.taskExecutor).connect(adapter, returnValue);
 				return emitter;
 			}
 			if (CharSequence.class.isAssignableFrom(elementClass)) {
-				logExecutorWarning(returnType);
 				ResponseBodyEmitter emitter = getEmitter(mediaType.orElse(MediaType.TEXT_PLAIN));
 				new TextEmitterSubscriber(emitter, this.taskExecutor).connect(adapter, returnValue);
 				return emitter;
 			}
-			if (mediaTypes.stream().anyMatch(MediaType.APPLICATION_STREAM_JSON::includes)) {
-				logExecutorWarning(returnType);
-				ResponseBodyEmitter emitter = getEmitter(MediaType.APPLICATION_STREAM_JSON);
+			MediaType streamingResponseType = findConcreteStreamingMediaType(mediaTypes);
+			if (streamingResponseType != null) {
+				ResponseBodyEmitter emitter = getEmitter(streamingResponseType);
 				new JsonEmitterSubscriber(emitter, this.taskExecutor).connect(adapter, returnValue);
 				return emitter;
 			}
@@ -158,6 +164,45 @@ class ReactiveTypeHandler {
 		WebAsyncUtils.getAsyncManager(request).startDeferredResultProcessing(result, mav);
 
 		return null;
+	}
+
+	/**
+	 * Attempts to find a concrete {@code MediaType} that can be streamed (as json separated
+	 * by newlines in the response body). This method considers two concrete types
+	 * {@code APPLICATION_NDJSON} and {@code APPLICATION_STREAM_JSON}) as well as any
+	 * subtype of application that has the {@code +x-ndjson} suffix. In the later case,
+	 * the media type MUST be concrete for it to be considered.
+	 *
+	 * <p>For example {@code application/vnd.myapp+x-ndjson} is considered a streaming type
+	 * while {@code application/*+x-ndjson} isn't.
+	 * @param acceptedMediaTypes the collection of acceptable media types in the request
+	 * @return the concrete streaming {@code MediaType} if one could be found or {@code null}
+	 * if none could be found
+	 */
+	@SuppressWarnings("deprecation")
+	@Nullable
+	static MediaType findConcreteStreamingMediaType(Collection<MediaType> acceptedMediaTypes) {
+		for (MediaType acceptedType : acceptedMediaTypes) {
+			if (WILDCARD_SUBTYPE_SUFFIXED_BY_NDJSON.includes(acceptedType)) {
+				if (acceptedType.isConcrete()) {
+					return acceptedType;
+				}
+				else {
+					// if not concrete, it must be application/*+x-ndjson: we assume
+					// that the requester is only interested in the ndjson nature of
+					// the underlying representation and can parse any example of that
+					// underlying representation, so we use the ndjson media type.
+					return MediaType.APPLICATION_NDJSON;
+				}
+			}
+			else if (MediaType.APPLICATION_NDJSON.includes(acceptedType)) {
+				return MediaType.APPLICATION_NDJSON;
+			}
+			else if (MediaType.APPLICATION_STREAM_JSON.includes(acceptedType)) {
+				return MediaType.APPLICATION_STREAM_JSON;
+			}
+		}
+		return null; // not a concrete streaming type
 	}
 
 	@SuppressWarnings("unchecked")
@@ -178,27 +223,6 @@ class ReactiveTypeHandler {
 				outputMessage.getHeaders().setContentType(mediaType);
 			}
 		};
-	}
-
-	@SuppressWarnings("ConstantConditions")
-	private void logExecutorWarning(MethodParameter returnType) {
-		if (this.taskExecutorWarning && logger.isWarnEnabled()) {
-			synchronized (this) {
-				if (this.taskExecutorWarning) {
-					String executorTypeName = this.taskExecutor.getClass().getSimpleName();
-					logger.warn("\n!!!\n" +
-							"Streaming through a reactive type requires an Executor to write to the response.\n" +
-							"Please, configure a TaskExecutor in the MVC config under \"async support\".\n" +
-							"The " + executorTypeName + " currently in use is not suitable under load.\n" +
-							"-------------------------------\n" +
-							"Controller:\t" + returnType.getContainingClass().getName() + "\n" +
-							"Method:\t\t" + returnType.getMethod().getName() + "\n" +
-							"Returning:\t" + ResolvableType.forMethodParameter(returnType).toString() + "\n" +
-							"!!!");
-					this.taskExecutorWarning = false;
-				}
-			}
-		}
 	}
 
 
@@ -360,8 +384,7 @@ class ReactiveTypeHandler {
 
 		@Override
 		protected void send(Object element) throws IOException {
-			if (element instanceof ServerSentEvent) {
-				ServerSentEvent<?> event = (ServerSentEvent<?>) element;
+			if (element instanceof ServerSentEvent<?> event) {
 				((SseEmitter) getEmitter()).send(adapt(event));
 			}
 			else {
@@ -487,6 +510,25 @@ class ReactiveTypeHandler {
 
 		public ResolvableType getReturnType() {
 			return ResolvableType.forClassWithGenerics(List.class, this.elementType);
+		}
+	}
+
+
+	private static class ContextSnapshotHelper {
+
+		@SuppressWarnings("deprecation")
+		public static Object writeReactorContext(Object returnValue) {
+			if (Mono.class.isAssignableFrom(returnValue.getClass())) {
+				ContextSnapshot snapshot = ContextSnapshot.captureAll();
+				return ((Mono<?>) returnValue).contextWrite(snapshot::updateContext);
+			}
+			else if (Flux.class.isAssignableFrom(returnValue.getClass())) {
+				ContextSnapshot snapshot = ContextSnapshot.captureAll();
+				return ((Flux<?>) returnValue).contextWrite(snapshot::updateContext);
+			}
+			else {
+				return returnValue;
+			}
 		}
 	}
 

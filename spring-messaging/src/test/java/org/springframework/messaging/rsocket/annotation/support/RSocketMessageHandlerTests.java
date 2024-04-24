@@ -1,5 +1,5 @@
 /*
- * Copyright 2002-2019 the original author or authors.
+ * Copyright 2002-2024 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -13,6 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 package org.springframework.messaging.rsocket.annotation.support;
 
 import java.util.Arrays;
@@ -21,6 +22,9 @@ import java.util.Map;
 
 import io.rsocket.frame.FrameType;
 import org.junit.jupiter.api.Test;
+import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
+import reactor.test.StepVerifier;
 
 import org.springframework.core.ReactiveAdapterRegistry;
 import org.springframework.core.codec.ByteArrayDecoder;
@@ -48,14 +52,15 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * Unit tests for {@link RSocketMessageHandler}.
+ * Tests for {@link RSocketMessageHandler}.
+ *
  * @author Rossen Stoyanchev
  * @since 5.2
  */
-public class RSocketMessageHandlerTests {
+class RSocketMessageHandlerTests {
 
 	@Test
-	public void getRSocketStrategies() {
+	void getRSocketStrategies() {
 		RSocketMessageHandler handler = new RSocketMessageHandler();
 		handler.setDecoders(Collections.singletonList(new ByteArrayDecoder()));
 		handler.setEncoders(Collections.singletonList(new ByteArrayEncoder()));
@@ -73,7 +78,7 @@ public class RSocketMessageHandlerTests {
 	}
 
 	@Test
-	public void setRSocketStrategies() {
+	void setRSocketStrategies() {
 		RSocketStrategies strategies = RSocketStrategies.builder()
 				.encoder(new ByteArrayEncoder())
 				.decoder(new ByteArrayDecoder())
@@ -93,7 +98,7 @@ public class RSocketMessageHandlerTests {
 	}
 
 	@Test
-	public void getRSocketStrategiesReflectsCurrentState() {
+	void getRSocketStrategiesReflectsCurrentState() {
 
 		RSocketMessageHandler handler = new RSocketMessageHandler();
 
@@ -128,7 +133,7 @@ public class RSocketMessageHandlerTests {
 	}
 
 	@Test
-	public void metadataExtractorWithExplicitlySetDecoders() {
+	void metadataExtractorWithExplicitlySetDecoders() {
 		DefaultMetadataExtractor extractor = new DefaultMetadataExtractor(StringDecoder.allMimeTypes());
 
 		RSocketMessageHandler handler = new RSocketMessageHandler();
@@ -141,7 +146,7 @@ public class RSocketMessageHandlerTests {
 	}
 
 	@Test
-	public void mappings() {
+	void mappings() {
 		testMapping(new SimpleController(), "path");
 		testMapping(new TypeLevelMappingController(), "base.path");
 		testMapping(new HandleAllController());
@@ -171,7 +176,70 @@ public class RSocketMessageHandlerTests {
 	}
 
 	@Test
-	public void handleNoMatch() {
+	void rejectConnectMappingMethodsThatCanReply() {
+
+		RSocketMessageHandler handler = new RSocketMessageHandler();
+		handler.setHandlers(Collections.singletonList(new InvalidConnectMappingController()));
+		assertThatThrownBy(handler::afterPropertiesSet)
+				.hasMessage("Invalid @ConnectMapping method. " +
+						"Return type must be void or a void async type: " +
+						"public java.lang.String org.springframework.messaging.rsocket.annotation.support." +
+						"RSocketMessageHandlerTests$InvalidConnectMappingController.connectString()");
+
+		handler = new RSocketMessageHandler();
+		handler.setHandlers(Collections.singletonList(new AnotherInvalidConnectMappingController()));
+		assertThatThrownBy(handler::afterPropertiesSet)
+				.hasMessage("Invalid @ConnectMapping method. " +
+						"Return type must be void or a void async type: " +
+						"public reactor.core.publisher.Mono<java.lang.String> " +
+						"org.springframework.messaging.rsocket.annotation.support." +
+						"RSocketMessageHandlerTests$AnotherInvalidConnectMappingController.connectString()");
+	}
+
+	@Test
+	void ignoreFireAndForgetToHandlerThatCanReply() {
+
+		InteractionMismatchController controller = new InteractionMismatchController();
+
+		RSocketMessageHandler handler = new RSocketMessageHandler();
+		handler.setHandlers(Collections.singletonList(controller));
+		handler.afterPropertiesSet();
+
+		MessageHeaderAccessor headers = new MessageHeaderAccessor();
+		headers.setLeaveMutable(true);
+		RouteMatcher.Route route = handler.getRouteMatcher().parseRoute("mono-string");
+		headers.setHeader(DestinationPatternsMessageCondition.LOOKUP_DESTINATION_HEADER, route);
+		headers.setHeader(RSocketFrameTypeMessageCondition.FRAME_TYPE_HEADER, FrameType.REQUEST_FNF);
+		Message<?> message = MessageBuilder.createMessage(Mono.empty(), headers.getMessageHeaders());
+
+		// Simply dropped and logged (error cannot propagate to client)
+		StepVerifier.create(handler.handleMessage(message)).expectComplete().verify();
+		assertThat(controller.invokeCount).isEqualTo(0);
+	}
+
+	@Test
+	void rejectRequestResponseToStreamingHandler() {
+
+		RSocketMessageHandler handler = new RSocketMessageHandler();
+		handler.setHandlers(Collections.singletonList(new InteractionMismatchController()));
+		handler.afterPropertiesSet();
+
+		MessageHeaderAccessor headers = new MessageHeaderAccessor();
+		headers.setLeaveMutable(true);
+		RouteMatcher.Route route = handler.getRouteMatcher().parseRoute("flux-string");
+		headers.setHeader(DestinationPatternsMessageCondition.LOOKUP_DESTINATION_HEADER, route);
+		headers.setHeader(RSocketFrameTypeMessageCondition.FRAME_TYPE_HEADER, FrameType.REQUEST_RESPONSE);
+		Message<?> message = MessageBuilder.createMessage(Mono.empty(), headers.getMessageHeaders());
+
+		StepVerifier.create(handler.handleMessage(message))
+				.expectErrorMessage(
+						"Destination 'flux-string' does not support REQUEST_RESPONSE. " +
+								"Supported interaction(s): [REQUEST_STREAM]")
+				.verify();
+	}
+
+	@Test
+	void handleNoMatch() {
 
 		testHandleNoMatch(FrameType.SETUP);
 		testHandleNoMatch(FrameType.METADATA_PUSH);
@@ -219,6 +287,40 @@ public class RSocketMessageHandlerTests {
 
 		@ConnectMapping
 		public void handleAll() {
+		}
+	}
+
+
+	private static class InvalidConnectMappingController {
+
+		@ConnectMapping
+		public String connectString() {
+			return "";
+		}
+	}
+
+	private static class AnotherInvalidConnectMappingController {
+
+		@ConnectMapping
+		public Mono<String> connectString() {
+			return Mono.empty();
+		}
+	}
+
+	private static class InteractionMismatchController {
+
+		private int invokeCount;
+
+		@MessageMapping("mono-string")
+		public Mono<String> messageMonoString() {
+			this.invokeCount++;
+			return Mono.empty();
+		}
+
+		@MessageMapping("flux-string")
+		public Flux<String> messageFluxString() {
+			this.invokeCount++;
+			return Flux.empty();
 		}
 	}
 

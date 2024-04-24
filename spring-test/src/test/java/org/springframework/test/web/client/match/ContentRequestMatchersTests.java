@@ -1,5 +1,5 @@
 /*
- * Copyright 2002-2019 the original author or authors.
+ * Copyright 2002-2024 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,8 +17,9 @@
 package org.springframework.test.web.client.match;
 
 import java.nio.charset.StandardCharsets;
+import java.util.Collections;
+import java.util.Map;
 
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import org.springframework.http.MediaType;
@@ -31,19 +32,13 @@ import static org.hamcrest.Matchers.hasXPath;
 
 
 /**
- * Unit tests for {@link ContentRequestMatchers}.
+ * Tests for {@link ContentRequestMatchers}.
  *
  * @author Rossen Stoyanchev
  */
 public class ContentRequestMatchersTests {
 
-	private MockClientHttpRequest request;
-
-
-	@BeforeEach
-	public void setUp() {
-		this.request = new MockClientHttpRequest();
-	}
+	private final MockClientHttpRequest request = new MockClientHttpRequest();
 
 
 	@Test
@@ -55,7 +50,7 @@ public class ContentRequestMatchersTests {
 	}
 
 	@Test
-	public void testContentTypeNoMatch1() throws Exception {
+	public void testContentTypeNoMatch1() {
 		this.request.getHeaders().setContentType(MediaType.APPLICATION_JSON);
 
 		assertThatExceptionOfType(AssertionError.class).isThrownBy(() ->
@@ -63,7 +58,7 @@ public class ContentRequestMatchersTests {
 	}
 
 	@Test
-	public void testContentTypeNoMatch2() throws Exception {
+	public void testContentTypeNoMatch2() {
 		this.request.getHeaders().setContentType(MediaType.APPLICATION_JSON);
 
 		assertThatExceptionOfType(AssertionError.class).isThrownBy(() ->
@@ -115,6 +110,89 @@ public class ContentRequestMatchersTests {
 		map.add("name 2", "value B");
 		map.add("name 3", null);
 		MockRestRequestMatchers.content().formData(map).match(this.request);
+	}
+
+	@Test
+	public void testFormDataContains() throws Exception {
+		String contentType = "application/x-www-form-urlencoded;charset=UTF-8";
+		String body = "name+1=value+1&name+2=value+A&name+2=value+B&name+3";
+
+		this.request.getHeaders().setContentType(MediaType.parseMediaType(contentType));
+		this.request.getBody().write(body.getBytes(StandardCharsets.UTF_8));
+
+		MockRestRequestMatchers.content()
+				.formDataContains(Collections.singletonMap("name 1", "value 1"))
+				.match(this.request);
+	}
+
+	@Test
+	public void testMultipartData() throws Exception {
+		String contentType = "multipart/form-data;boundary=1234567890";
+		String body = """
+				--1234567890\r
+				Content-Disposition: form-data; name="name 1"\r
+				\r
+				vølue 1\r
+				--1234567890\r
+				Content-Disposition: form-data; name="name 2"\r
+				\r
+				value 🙂\r
+				--1234567890\r
+				Content-Disposition: form-data; name="name 3"\r
+				\r
+				value 漢字\r
+				--1234567890\r
+				Content-Disposition: form-data; name="name 4"\r
+				\r
+				\r
+				--1234567890--\r
+				""";
+
+		this.request.getHeaders().setContentType(MediaType.parseMediaType(contentType));
+		this.request.getBody().write(body.getBytes(StandardCharsets.UTF_8));
+
+		MultiValueMap<String, String> map = new LinkedMultiValueMap<>();
+		map.add("name 1", "vølue 1");
+		map.add("name 2", "value 🙂");
+		map.add("name 3", "value 漢字");
+		map.add("name 4", "");
+		MockRestRequestMatchers.content().multipartData(map).match(this.request);
+	}
+
+	@Test
+	public void testMultipartDataContains() throws Exception {
+		String contentType = "multipart/form-data;boundary=1234567890";
+		String body = """
+				--1234567890\r
+				Content-Disposition: form-data; name="name 1"\r
+				\r
+				vølue 1\r
+				--1234567890\r
+				Content-Disposition: form-data; name="name 2"\r
+				\r
+				value 🙂\r
+				--1234567890\r
+				Content-Disposition: form-data; name="name 3"\r
+				\r
+				value 漢字\r
+				--1234567890\r
+				Content-Disposition: form-data; name="name 4"\r
+				\r
+				\r
+				--1234567890--\r
+				""";
+
+		this.request.getHeaders().setContentType(MediaType.parseMediaType(contentType));
+		this.request.getBody().write(body.getBytes(StandardCharsets.UTF_8));
+
+		MockRestRequestMatchers.content()
+				.multipartDataContains(Map.of(
+						"name 1", "vølue 1",
+						"name 2", "value 🙂",
+						"name 3", "value 漢字",
+						"name 4", "")
+				)
+				.match(this.request);
 	}
 
 	@Test

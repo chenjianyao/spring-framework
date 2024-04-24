@@ -1,5 +1,5 @@
 /*
- * Copyright 2002-2019 the original author or authors.
+ * Copyright 2002-2024 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -28,7 +28,6 @@ import reactor.core.scheduler.Schedulers;
 
 import org.springframework.core.io.buffer.DataBuffer;
 import org.springframework.core.io.buffer.DefaultDataBufferFactory;
-import org.springframework.core.io.buffer.support.DataBufferTestUtils;
 import org.springframework.http.HttpCookie;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
@@ -45,11 +44,11 @@ import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Unit tests for {@link HttpHandlerConnector}.
+ * Tests for {@link HttpHandlerConnector}.
+ *
  * @author Rossen Stoyanchev
  */
 public class HttpHandlerConnectorTests {
-
 
 	@Test
 	public void adaptRequest() {
@@ -76,7 +75,7 @@ public class HttpHandlerConnectorTests {
 		assertThat(headers.get(HttpHeaders.COOKIE)).isEqualTo(Collections.singletonList("custom-cookie=c0"));
 
 		DataBuffer buffer = request.getBody().blockFirst(Duration.ZERO);
-		assertThat(DataBufferTestUtils.dumpString(buffer, UTF_8)).isEqualTo("Custom body");
+		assertThat(buffer.toString(UTF_8)).isEqualTo("Custom body");
 	}
 
 	@Test
@@ -102,7 +101,7 @@ public class HttpHandlerConnectorTests {
 		assertThat(headers.get(HttpHeaders.SET_COOKIE)).isEqualTo(Collections.singletonList("custom-cookie=c0"));
 
 		DataBuffer buffer = response.getBody().blockFirst(Duration.ZERO);
-		assertThat(DataBufferTestUtils.dumpString(buffer, UTF_8)).isEqualTo("Custom body");
+		assertThat(buffer.toString(UTF_8)).isEqualTo("Custom body");
 	}
 
 	@Test // gh-23936
@@ -122,7 +121,7 @@ public class HttpHandlerConnectorTests {
 	}
 
 	private DataBuffer toDataBuffer(String body) {
-		return new DefaultDataBufferFactory().wrap(body.getBytes(UTF_8));
+		return DefaultDataBufferFactory.sharedInstance.wrap(body.getBytes(UTF_8));
 	}
 
 

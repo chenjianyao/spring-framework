@@ -1,5 +1,5 @@
 /*
- * Copyright 2002-2019 the original author or authors.
+ * Copyright 2002-2024 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,33 +18,36 @@ package org.springframework.web.servlet.mvc.method.annotation;
 
 import java.io.InputStream;
 import java.io.Reader;
+import java.lang.annotation.ElementType;
+import java.lang.annotation.Retention;
+import java.lang.annotation.RetentionPolicy;
+import java.lang.annotation.Target;
 import java.lang.reflect.Method;
 import java.security.Principal;
 import java.time.ZoneId;
 import java.util.Locale;
 import java.util.TimeZone;
 
-import javax.servlet.ServletRequest;
-import javax.servlet.http.HttpSession;
-import javax.servlet.http.PushBuilder;
-
+import jakarta.servlet.ServletRequest;
+import jakarta.servlet.http.HttpSession;
+import jakarta.servlet.http.PushBuilder;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.mockito.Mockito;
 
 import org.springframework.core.MethodParameter;
 import org.springframework.http.HttpMethod;
-import org.springframework.mock.web.test.MockHttpServletRequest;
-import org.springframework.mock.web.test.MockHttpServletResponse;
-import org.springframework.mock.web.test.MockHttpSession;
 import org.springframework.web.context.request.ServletWebRequest;
 import org.springframework.web.context.request.WebRequest;
 import org.springframework.web.method.support.ModelAndViewContainer;
 import org.springframework.web.multipart.MultipartRequest;
 import org.springframework.web.servlet.DispatcherServlet;
 import org.springframework.web.servlet.i18n.FixedLocaleResolver;
+import org.springframework.web.testfixture.servlet.MockHttpServletRequest;
+import org.springframework.web.testfixture.servlet.MockHttpServletResponse;
+import org.springframework.web.testfixture.servlet.MockHttpSession;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.mock;
 
 /**
  * @author Arjen Poutsma
@@ -52,7 +55,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * @author Juergen Hoeller
  * @author Nicholas Williams
  */
-public class ServletRequestMethodArgumentResolverTests {
+class ServletRequestMethodArgumentResolverTests {
 
 	private ServletRequestMethodArgumentResolver resolver;
 
@@ -66,7 +69,7 @@ public class ServletRequestMethodArgumentResolverTests {
 
 
 	@BeforeEach
-	public void setup() throws Exception {
+	void setup() throws Exception {
 		resolver = new ServletRequestMethodArgumentResolver();
 		mavContainer = new ModelAndViewContainer();
 		servletRequest = new MockHttpServletRequest("GET", "");
@@ -79,7 +82,7 @@ public class ServletRequestMethodArgumentResolverTests {
 
 
 	@Test
-	public void servletRequest() throws Exception {
+	void servletRequest() throws Exception {
 		MethodParameter servletRequestParameter = new MethodParameter(method, 0);
 		assertThat(resolver.supportsParameter(servletRequestParameter)).as("ServletRequest not supported").isTrue();
 
@@ -89,7 +92,7 @@ public class ServletRequestMethodArgumentResolverTests {
 	}
 
 	@Test
-	public void session() throws Exception {
+	void session() throws Exception {
 		MockHttpSession session = new MockHttpSession();
 		servletRequest.setSession(session);
 
@@ -102,7 +105,7 @@ public class ServletRequestMethodArgumentResolverTests {
 	}
 
 	@Test
-	public void principal() throws Exception {
+	void principal() throws Exception {
 		Principal principal = () -> "Foo";
 		servletRequest.setUserPrincipal(principal);
 
@@ -114,7 +117,7 @@ public class ServletRequestMethodArgumentResolverTests {
 	}
 
 	@Test
-	public void principalAsNull() throws Exception {
+	void principalAsNull() throws Exception {
 		MethodParameter principalParameter = new MethodParameter(method, 3);
 		assertThat(resolver.supportsParameter(principalParameter)).as("Principal not supported").isTrue();
 
@@ -122,8 +125,18 @@ public class ServletRequestMethodArgumentResolverTests {
 		assertThat(result).as("Invalid result").isNull();
 	}
 
+	@Test // gh-25780
+	public void annotatedPrincipal() throws Exception {
+		Principal principal = () -> "Foo";
+		servletRequest.setUserPrincipal(principal);
+		Method principalMethod = getClass().getMethod("supportedParamsWithAnnotatedPrincipal", Principal.class);
+
+		MethodParameter principalParameter = new MethodParameter(principalMethod, 0);
+		assertThat(resolver.supportsParameter(principalParameter)).as("Principal not supported").isFalse();
+	}
+
 	@Test
-	public void locale() throws Exception {
+	void locale() throws Exception {
 		Locale locale = Locale.ENGLISH;
 		servletRequest.addPreferredLocale(locale);
 
@@ -135,7 +148,7 @@ public class ServletRequestMethodArgumentResolverTests {
 	}
 
 	@Test
-	public void localeFromResolver() throws Exception {
+	void localeFromResolver() throws Exception {
 		Locale locale = Locale.ENGLISH;
 		servletRequest.setAttribute(DispatcherServlet.LOCALE_RESOLVER_ATTRIBUTE,
 				new FixedLocaleResolver(locale));
@@ -148,7 +161,7 @@ public class ServletRequestMethodArgumentResolverTests {
 	}
 
 	@Test
-	public void timeZone() throws Exception {
+	void timeZone() throws Exception {
 		MethodParameter timeZoneParameter = new MethodParameter(method, 8);
 		assertThat(resolver.supportsParameter(timeZoneParameter)).as("TimeZone not supported").isTrue();
 
@@ -157,7 +170,7 @@ public class ServletRequestMethodArgumentResolverTests {
 	}
 
 	@Test
-	public void timeZoneFromResolver() throws Exception {
+	void timeZoneFromResolver() throws Exception {
 		TimeZone timeZone = TimeZone.getTimeZone("America/Los_Angeles");
 		servletRequest.setAttribute(DispatcherServlet.LOCALE_RESOLVER_ATTRIBUTE,
 				new FixedLocaleResolver(Locale.US, timeZone));
@@ -170,7 +183,7 @@ public class ServletRequestMethodArgumentResolverTests {
 	}
 
 	@Test
-	public void zoneId() throws Exception {
+	void zoneId() throws Exception {
 		MethodParameter zoneIdParameter = new MethodParameter(method, 9);
 		assertThat(resolver.supportsParameter(zoneIdParameter)).as("ZoneId not supported").isTrue();
 
@@ -179,7 +192,7 @@ public class ServletRequestMethodArgumentResolverTests {
 	}
 
 	@Test
-	public void zoneIdFromResolver() throws Exception {
+	void zoneIdFromResolver() throws Exception {
 		TimeZone timeZone = TimeZone.getTimeZone("America/New_York");
 		servletRequest.setAttribute(DispatcherServlet.LOCALE_RESOLVER_ATTRIBUTE,
 				new FixedLocaleResolver(Locale.US, timeZone));
@@ -192,7 +205,7 @@ public class ServletRequestMethodArgumentResolverTests {
 	}
 
 	@Test
-	public void inputStream() throws Exception {
+	void inputStream() throws Exception {
 		MethodParameter inputStreamParameter = new MethodParameter(method, 5);
 		assertThat(resolver.supportsParameter(inputStreamParameter)).as("InputStream not supported").isTrue();
 
@@ -201,7 +214,7 @@ public class ServletRequestMethodArgumentResolverTests {
 	}
 
 	@Test
-	public void reader() throws Exception {
+	void reader() throws Exception {
 		MethodParameter readerParameter = new MethodParameter(method, 6);
 		assertThat(resolver.supportsParameter(readerParameter)).as("Reader not supported").isTrue();
 
@@ -210,7 +223,7 @@ public class ServletRequestMethodArgumentResolverTests {
 	}
 
 	@Test
-	public void webRequest() throws Exception {
+	void webRequest() throws Exception {
 		MethodParameter webRequestParameter = new MethodParameter(method, 7);
 		assertThat(resolver.supportsParameter(webRequestParameter)).as("WebRequest not supported").isTrue();
 
@@ -219,7 +232,7 @@ public class ServletRequestMethodArgumentResolverTests {
 	}
 
 	@Test
-	public void httpMethod() throws Exception {
+	void httpMethod() throws Exception {
 		MethodParameter httpMethodParameter = new MethodParameter(method, 10);
 		assertThat(resolver.supportsParameter(httpMethodParameter)).as("HttpMethod not supported").isTrue();
 
@@ -228,8 +241,8 @@ public class ServletRequestMethodArgumentResolverTests {
 	}
 
 	@Test
-	public void pushBuilder() throws Exception {
-		final PushBuilder pushBuilder = Mockito.mock(PushBuilder.class);
+	void pushBuilder() throws Exception {
+		final PushBuilder pushBuilder = mock();
 		servletRequest = new MockHttpServletRequest("GET", "") {
 			@Override
 			public PushBuilder newPushBuilder() {
@@ -258,7 +271,13 @@ public class ServletRequestMethodArgumentResolverTests {
 								TimeZone p8,
 								ZoneId p9,
 								HttpMethod p10,
-								PushBuilder p11) {
-	}
+								PushBuilder p11) {}
+
+	@Target({ ElementType.PARAMETER })
+	@Retention(RetentionPolicy.RUNTIME)
+	public @interface AuthenticationPrincipal {}
+
+	@SuppressWarnings("unused")
+	public void supportedParamsWithAnnotatedPrincipal(@AuthenticationPrincipal Principal p) {}
 
 }

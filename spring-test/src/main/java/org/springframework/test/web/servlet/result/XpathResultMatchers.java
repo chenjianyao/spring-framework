@@ -1,5 +1,5 @@
 /*
- * Copyright 2002-2019 the original author or authors.
+ * Copyright 2002-2023 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -22,6 +22,7 @@ import javax.xml.xpath.XPathExpressionException;
 
 import org.hamcrest.Matcher;
 import org.w3c.dom.Node;
+import org.w3c.dom.NodeList;
 
 import org.springframework.lang.Nullable;
 import org.springframework.mock.web.MockHttpServletResponse;
@@ -51,7 +52,7 @@ public class XpathResultMatchers {
 	 * @param args arguments to parameterize the XPath expression with using the
 	 * formatting specifiers defined in {@link String#format(String, Object...)}
 	 */
-	protected XpathResultMatchers(String expression, @Nullable Map<String, String> namespaces, Object ... args)
+	protected XpathResultMatchers(String expression, @Nullable Map<String, String> namespaces, Object... args)
 			throws XPathExpressionException {
 
 		this.xpathHelper = new XpathExpectationsHelper(expression, namespaces, args);
@@ -70,7 +71,19 @@ public class XpathResultMatchers {
 	}
 
 	/**
-	 * Get the response encoding if explicitly defined in the response, {code null} otherwise.
+	 * Evaluate the XPath and assert the {@link NodeList} content found with the
+	 * given Hamcrest {@link Matcher}.
+	 * @since 5.2.2
+	 */
+	public ResultMatcher nodeList(Matcher<? super NodeList> matcher) {
+		return result -> {
+			MockHttpServletResponse response = result.getResponse();
+			this.xpathHelper.assertNodeList(response.getContentAsByteArray(), getDefinedEncoding(response), matcher);
+		};
+	}
+
+	/**
+	 * Get the response encoding if explicitly defined in the response, {@code null} otherwise.
 	 */
 	@Nullable
 	private String getDefinedEncoding(MockHttpServletResponse response) {
@@ -101,7 +114,7 @@ public class XpathResultMatchers {
 	 * Evaluate the XPath and assert the number of nodes found with the given
 	 * Hamcrest {@link Matcher}.
 	 */
-	public ResultMatcher nodeCount(Matcher<Integer> matcher) {
+	public ResultMatcher nodeCount(Matcher<? super Integer> matcher) {
 		return result -> {
 			MockHttpServletResponse response = result.getResponse();
 			this.xpathHelper.assertNodeCount(response.getContentAsByteArray(), getDefinedEncoding(response), matcher);

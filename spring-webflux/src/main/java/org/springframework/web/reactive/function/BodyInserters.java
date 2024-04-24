@@ -1,5 +1,5 @@
 /*
- * Copyright 2002-2019 the original author or authors.
+ * Copyright 2002-2023 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,8 +16,10 @@
 
 package org.springframework.web.reactive.function;
 
+import java.io.OutputStream;
 import java.util.List;
-import java.util.stream.Collectors;
+import java.util.concurrent.Executor;
+import java.util.function.Consumer;
 
 import org.reactivestreams.Publisher;
 import reactor.core.publisher.Mono;
@@ -28,6 +30,8 @@ import org.springframework.core.ReactiveAdapterRegistry;
 import org.springframework.core.ResolvableType;
 import org.springframework.core.io.Resource;
 import org.springframework.core.io.buffer.DataBuffer;
+import org.springframework.core.io.buffer.DataBufferFactory;
+import org.springframework.core.io.buffer.DataBufferUtils;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.MediaType;
 import org.springframework.http.ReactiveHttpOutputMessage;
@@ -93,7 +97,8 @@ public abstract class BodyInserters {
 	 */
 	public static <T> BodyInserter<T, ReactiveHttpOutputMessage> fromValue(T body) {
 		Assert.notNull(body, "'body' must not be null");
-		Assert.isNull(registry.getAdapter(body.getClass()), "'body' should be an object, for reactive types use a variant specifying a publisher/producer and its related element type");
+		Assert.isNull(registry.getAdapter(body.getClass()),
+				"'body' should be an object, for reactive types use a variant specifying a publisher/producer and its related element type");
 		return (message, context) ->
 				writeWithMessageWriters(message, context, Mono.just(body), ResolvableType.forInstance(body), null);
 	}
@@ -112,7 +117,7 @@ public abstract class BodyInserters {
 	 * {@link #fromProducer(Object, Class)} should be used.
 	 * @see #fromPublisher(Publisher, Class)
 	 * @see #fromProducer(Object, Class)
-	 * @deprecated As of Spring Framework 5.2, in favor of {@link #fromValue(T)}.
+	 * @deprecated As of Spring Framework 5.2, in favor of {@link #fromValue(Object)}
 	 */
 	@Deprecated
 	public static <T> BodyInserter<T, ReactiveHttpOutputMessage> fromObject(T body) {
@@ -218,7 +223,8 @@ public abstract class BodyInserters {
 		return (outputMessage, context) -> {
 			ResolvableType elementType = RESOURCE_TYPE;
 			HttpMessageWriter<Resource> writer = findWriter(context, elementType, null);
-			return write(Mono.just(resource), elementType, null, outputMessage, context, writer);
+			MediaType contentType = outputMessage.getHeaders().getContentType();
+			return write(Mono.just(resource), elementType, contentType, outputMessage, context, writer);
 		};
 	}
 
@@ -357,13 +363,56 @@ public abstract class BodyInserters {
 		return (outputMessage, context) -> outputMessage.writeWith(publisher);
 	}
 
+	/**
+	 * Inserter based on bytes written to a {@code OutputStream}.
+	 * @param outputStreamConsumer invoked with an {@link OutputStream} that
+	 * writes to the output message
+	 * @param executor used to invoke the {@code outputStreamHandler} on a
+	 * separate thread
+	 * @return an inserter that writes what is written to the output stream
+	 * @since 6.1
+	 * @see DataBufferUtils#outputStreamPublisher(Consumer, DataBufferFactory, Executor)
+	 */
+	public static <T extends Publisher<DataBuffer>> BodyInserter<T, ReactiveHttpOutputMessage> fromOutputStream(
+			Consumer<OutputStream> outputStreamConsumer, Executor executor) {
+
+		Assert.notNull(outputStreamConsumer, "OutputStreamConsumer must not be null");
+		Assert.notNull(executor, "Executor must not be null");
+
+		return (outputMessage, context) -> outputMessage.writeWith(
+				DataBufferUtils.outputStreamPublisher(outputStreamConsumer, outputMessage.bufferFactory(), executor));
+	}
+
+	/**
+	 * Inserter based on bytes written to a {@code OutputStream}.
+	 * @param outputStreamConsumer invoked with an {@link OutputStream} that
+	 * writes to the output message
+	 * @param executor used to invoke the {@code outputStreamHandler} on a
+	 * separate thread
+	 * @param chunkSize minimum size of the buffer produced by the publisher
+	 * @return an inserter that writes what is written to the output stream
+	 * @since 6.1
+	 * @see DataBufferUtils#outputStreamPublisher(Consumer, DataBufferFactory, Executor, int)
+	 */
+	public static <T extends Publisher<DataBuffer>> BodyInserter<T, ReactiveHttpOutputMessage> fromOutputStream(
+			Consumer<OutputStream> outputStreamConsumer, Executor executor, int chunkSize) {
+
+		Assert.notNull(outputStreamConsumer, "OutputStreamConsumer must not be null");
+		Assert.notNull(executor, "Executor must not be null");
+		Assert.isTrue(chunkSize > 0, "Chunk size must be > 0");
+
+		return (outputMessage, context) -> outputMessage.writeWith(
+				DataBufferUtils.outputStreamPublisher(outputStreamConsumer, outputMessage.bufferFactory(), executor,
+						chunkSize));
+	}
+
 
 	private static <M extends ReactiveHttpOutputMessage> Mono<Void> writeWithMessageWriters(
 			M outputMessage, BodyInserter.Context context, Object body, ResolvableType bodyType, @Nullable ReactiveAdapter adapter) {
 
 		Publisher<?> publisher;
-		if (body instanceof Publisher) {
-			publisher = (Publisher<?>) body;
+		if (body instanceof Publisher<?> publisherBody) {
+			publisher = publisherBody;
 		}
 		else if (adapter != null) {
 			publisher = adapter.toPublisher(body);
@@ -372,20 +421,21 @@ public abstract class BodyInserters {
 			publisher = Mono.just(body);
 		}
 		MediaType mediaType = outputMessage.getHeaders().getContentType();
-		return context.messageWriters().stream()
-				.filter(messageWriter -> messageWriter.canWrite(bodyType, mediaType))
-				.findFirst()
-				.map(BodyInserters::cast)
-				.map(writer -> write(publisher, bodyType, mediaType, outputMessage, context, writer))
-				.orElseGet(() -> Mono.error(unsupportedError(bodyType, context, mediaType)));
+		for (HttpMessageWriter<?> messageWriter : context.messageWriters()) {
+			if (messageWriter.canWrite(bodyType, mediaType)) {
+				HttpMessageWriter<Object> typedMessageWriter = cast(messageWriter);
+				return write(publisher, bodyType, mediaType, outputMessage, context, typedMessageWriter);
+			}
+		}
+		return Mono.error(unsupportedError(bodyType, context, mediaType));
 	}
 
 	private static UnsupportedMediaTypeException unsupportedError(ResolvableType bodyType,
 			BodyInserter.Context context, @Nullable MediaType mediaType) {
 
 		List<MediaType> supportedMediaTypes = context.messageWriters().stream()
-				.flatMap(reader -> reader.getWritableMediaTypes().stream())
-				.collect(Collectors.toList());
+				.flatMap(reader -> reader.getWritableMediaTypes(bodyType).stream())
+				.toList();
 
 		return new UnsupportedMediaTypeException(mediaType, supportedMediaTypes, bodyType);
 	}
@@ -405,12 +455,13 @@ public abstract class BodyInserters {
 	private static <T> HttpMessageWriter<T> findWriter(
 			BodyInserter.Context context, ResolvableType elementType, @Nullable MediaType mediaType) {
 
-		return context.messageWriters().stream()
-				.filter(messageWriter -> messageWriter.canWrite(elementType, mediaType))
-				.findFirst()
-				.map(BodyInserters::<T>cast)
-				.orElseThrow(() -> new IllegalStateException(
-						"No HttpMessageWriter for \"" + mediaType + "\" and \"" + elementType + "\""));
+		for (HttpMessageWriter<?> messageWriter : context.messageWriters()) {
+			if (messageWriter.canWrite(elementType, mediaType)) {
+				return cast(messageWriter);
+			}
+		}
+		throw new IllegalStateException(
+						"No HttpMessageWriter for \"" + mediaType + "\" and \"" + elementType + "\"");
 	}
 
 	@SuppressWarnings("unchecked")

@@ -1,5 +1,5 @@
 /*
- * Copyright 2002-2018 the original author or authors.
+ * Copyright 2002-2023 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -28,14 +28,14 @@ import org.apache.commons.logging.LogFactory;
 import org.springframework.jdbc.CannotGetJdbcConnectionException;
 import org.springframework.lang.Nullable;
 import org.springframework.transaction.TransactionDefinition;
-import org.springframework.transaction.support.TransactionSynchronizationAdapter;
+import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.util.Assert;
 
 /**
- * Helper class that provides static methods for obtaining JDBC Connections from
- * a {@link javax.sql.DataSource}. Includes special support for Spring-managed
- * transactional Connections, e.g. managed by {@link DataSourceTransactionManager}
+ * Helper class that provides static methods for obtaining JDBC {@code Connection}s
+ * from a {@link javax.sql.DataSource}. Includes special support for Spring-managed
+ * transactional {@code Connection}s, e.g. managed by {@link DataSourceTransactionManager}
  * or {@link org.springframework.transaction.jta.JtaTransactionManager}.
  *
  * <p>Used internally by Spring's {@link org.springframework.jdbc.core.JdbcTemplate},
@@ -46,7 +46,8 @@ import org.springframework.util.Assert;
  * @author Juergen Hoeller
  * @see #getConnection
  * @see #releaseConnection
- * @see DataSourceTransactionManager
+ * @see org.springframework.jdbc.core.JdbcTemplate
+ * @see org.springframework.jdbc.support.JdbcTransactionManager
  * @see org.springframework.transaction.jta.JtaTransactionManager
  * @see org.springframework.transaction.support.TransactionSynchronizationManager
  */
@@ -72,7 +73,8 @@ public abstract class DataSourceUtils {
 	 * @return a JDBC Connection from the given DataSource
 	 * @throws org.springframework.jdbc.CannotGetJdbcConnectionException
 	 * if the attempt to get a Connection failed
-	 * @see #releaseConnection
+	 * @see #releaseConnection(Connection, DataSource)
+	 * @see #isConnectionTransactional(Connection, DataSource)
 	 */
 	public static Connection getConnection(DataSource dataSource) throws CannotGetJdbcConnectionException {
 		try {
@@ -82,7 +84,7 @@ public abstract class DataSourceUtils {
 			throw new CannotGetJdbcConnectionException("Failed to obtain JDBC Connection", ex);
 		}
 		catch (IllegalStateException ex) {
-			throw new CannotGetJdbcConnectionException("Failed to obtain JDBC Connection: " + ex.getMessage());
+			throw new CannotGetJdbcConnectionException("Failed to obtain JDBC Connection", ex);
 		}
 	}
 
@@ -178,10 +180,11 @@ public abstract class DataSourceUtils {
 
 		Assert.notNull(con, "No Connection specified");
 
+		boolean debugEnabled = logger.isDebugEnabled();
 		// Set read-only flag.
 		if (definition != null && definition.isReadOnly()) {
 			try {
-				if (logger.isDebugEnabled()) {
+				if (debugEnabled) {
 					logger.debug("Setting JDBC Connection [" + con + "] read-only");
 				}
 				con.setReadOnly(true);
@@ -203,7 +206,7 @@ public abstract class DataSourceUtils {
 		// Apply specific isolation level, if any.
 		Integer previousIsolationLevel = null;
 		if (definition != null && definition.getIsolationLevel() != TransactionDefinition.ISOLATION_DEFAULT) {
-			if (logger.isDebugEnabled()) {
+			if (debugEnabled) {
 				logger.debug("Changing isolation level of JDBC Connection [" + con + "] to " +
 						definition.getIsolationLevel());
 			}
@@ -232,10 +235,11 @@ public abstract class DataSourceUtils {
 			Connection con, @Nullable Integer previousIsolationLevel, boolean resetReadOnly) {
 
 		Assert.notNull(con, "No Connection specified");
+		boolean debugEnabled = logger.isDebugEnabled();
 		try {
 			// Reset transaction isolation to previous value, if changed for the transaction.
 			if (previousIsolationLevel != null) {
-				if (logger.isDebugEnabled()) {
+				if (debugEnabled) {
 					logger.debug("Resetting isolation level of JDBC Connection [" +
 							con + "] to " + previousIsolationLevel);
 				}
@@ -244,7 +248,7 @@ public abstract class DataSourceUtils {
 
 			// Reset read-only flag if we originally switched it to true on transaction begin.
 			if (resetReadOnly) {
-				if (logger.isDebugEnabled()) {
+				if (debugEnabled) {
 					logger.debug("Resetting read-only flag of JDBC Connection [" + con + "]");
 				}
 				con.setReadOnly(false);
@@ -296,6 +300,7 @@ public abstract class DataSourceUtils {
 	 * @param dataSource the DataSource that the Connection was obtained from
 	 * (may be {@code null})
 	 * @return whether the Connection is transactional
+	 * @see #getConnection(DataSource)
 	 */
 	public static boolean isConnectionTransactional(Connection con, @Nullable DataSource dataSource) {
 		if (dataSource == null) {
@@ -306,8 +311,7 @@ public abstract class DataSourceUtils {
 	}
 
 	/**
-	 * Apply the current transaction timeout, if any,
-	 * to the given JDBC Statement object.
+	 * Apply the current transaction timeout, if any, to the given JDBC Statement object.
 	 * @param stmt the JDBC Statement object
 	 * @param dataSource the DataSource that the Connection was obtained from
 	 * @throws SQLException if thrown by JDBC methods
@@ -398,7 +402,7 @@ public abstract class DataSourceUtils {
 	 * @see SmartDataSource#shouldClose(Connection)
 	 */
 	public static void doCloseConnection(Connection con, @Nullable DataSource dataSource) throws SQLException {
-		if (!(dataSource instanceof SmartDataSource) || ((SmartDataSource) dataSource).shouldClose(con)) {
+		if (!(dataSource instanceof SmartDataSource smartDataSource) || smartDataSource.shouldClose(con)) {
 			con.close();
 		}
 	}
@@ -434,8 +438,8 @@ public abstract class DataSourceUtils {
 	 */
 	public static Connection getTargetConnection(Connection con) {
 		Connection conToUse = con;
-		while (conToUse instanceof ConnectionProxy) {
-			conToUse = ((ConnectionProxy) conToUse).getTargetConnection();
+		while (conToUse instanceof ConnectionProxy connectionProxy) {
+			conToUse = connectionProxy.getTargetConnection();
 		}
 		return conToUse;
 	}
@@ -451,9 +455,9 @@ public abstract class DataSourceUtils {
 	private static int getConnectionSynchronizationOrder(DataSource dataSource) {
 		int order = CONNECTION_SYNCHRONIZATION_ORDER;
 		DataSource currDs = dataSource;
-		while (currDs instanceof DelegatingDataSource) {
+		while (currDs instanceof DelegatingDataSource delegatingDataSource) {
 			order--;
-			currDs = ((DelegatingDataSource) currDs).getTargetDataSource();
+			currDs = delegatingDataSource.getTargetDataSource();
 		}
 		return order;
 	}
@@ -464,13 +468,13 @@ public abstract class DataSourceUtils {
 	 * (e.g. when participating in a JtaTransactionManager transaction).
 	 * @see org.springframework.transaction.jta.JtaTransactionManager
 	 */
-	private static class ConnectionSynchronization extends TransactionSynchronizationAdapter {
+	private static class ConnectionSynchronization implements TransactionSynchronization {
 
 		private final ConnectionHolder connectionHolder;
 
 		private final DataSource dataSource;
 
-		private int order;
+		private final int order;
 
 		private boolean holderActive = true;
 

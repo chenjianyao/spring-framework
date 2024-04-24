@@ -1,5 +1,5 @@
 /*
- * Copyright 2002-2019 the original author or authors.
+ * Copyright 2002-2024 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -41,16 +41,18 @@ import org.springframework.lang.Nullable;
 public interface BeanDefinition extends AttributeAccessor, BeanMetadataElement {
 
 	/**
-	 * Scope identifier for the standard singleton scope: "singleton".
+	 * Scope identifier for the standard singleton scope: {@value}.
 	 * <p>Note that extended bean factories might support further scopes.
 	 * @see #setScope
+	 * @see ConfigurableBeanFactory#SCOPE_SINGLETON
 	 */
 	String SCOPE_SINGLETON = ConfigurableBeanFactory.SCOPE_SINGLETON;
 
 	/**
-	 * Scope identifier for the standard prototype scope: "prototype".
+	 * Scope identifier for the standard prototype scope: {@value}.
 	 * <p>Note that extended bean factories might support further scopes.
 	 * @see #setScope
+	 * @see ConfigurableBeanFactory#SCOPE_PROTOTYPE
 	 */
 	String SCOPE_PROTOTYPE = ConfigurableBeanFactory.SCOPE_PROTOTYPE;
 
@@ -149,6 +151,9 @@ public interface BeanDefinition extends AttributeAccessor, BeanMetadataElement {
 	/**
 	 * Set the names of the beans that this bean depends on being initialized.
 	 * The bean factory will guarantee that these beans get initialized first.
+	 * <p>Note that dependencies are normally expressed through bean properties or
+	 * constructor arguments. This property should just be necessary for other kinds
+	 * of dependencies like statics (*ugh*) or database preparation on startup.
 	 */
 	void setDependsOn(@Nullable String... dependsOn);
 
@@ -176,6 +181,7 @@ public interface BeanDefinition extends AttributeAccessor, BeanMetadataElement {
 	 * Set whether this bean is a primary autowire candidate.
 	 * <p>If this value is {@code true} for exactly one bean among multiple
 	 * matching candidates, it will serve as a tie-breaker.
+	 * @see #setFallback
 	 */
 	void setPrimary(boolean primary);
 
@@ -185,14 +191,36 @@ public interface BeanDefinition extends AttributeAccessor, BeanMetadataElement {
 	boolean isPrimary();
 
 	/**
+	 * Set whether this bean is a fallback autowire candidate.
+	 * <p>If this value is {@code true} for all beans but one among multiple
+	 * matching candidates, the remaining bean will be selected.
+	 * @since 6.2
+	 * @see #setPrimary
+	 */
+	void setFallback(boolean fallback);
+
+	/**
+	 * Return whether this bean is a fallback autowire candidate.
+	 * @since 6.2
+	 */
+	boolean isFallback();
+
+	/**
 	 * Specify the factory bean to use, if any.
-	 * This the name of the bean to call the specified factory method on.
+	 * This is the name of the bean to call the specified factory method on.
+	 * <p>A factory bean name is only necessary for instance-based factory methods.
+	 * For static factory methods, the method will be derived from the bean class.
 	 * @see #setFactoryMethodName
+	 * @see #setBeanClassName
 	 */
 	void setFactoryBeanName(@Nullable String factoryBeanName);
 
 	/**
 	 * Return the factory bean name, if any.
+	 * <p>This will be {@code null} for static factory methods which will
+	 * be derived from the bean class instead.
+	 * @see #getFactoryMethodName()
+	 * @see #getBeanClassName()
 	 */
 	@Nullable
 	String getFactoryBeanName();
@@ -209,6 +237,8 @@ public interface BeanDefinition extends AttributeAccessor, BeanMetadataElement {
 
 	/**
 	 * Return a factory method, if any.
+	 * @see #getFactoryBeanName()
+	 * @see #getBeanClassName()
 	 */
 	@Nullable
 	String getFactoryMethodName();
@@ -223,6 +253,7 @@ public interface BeanDefinition extends AttributeAccessor, BeanMetadataElement {
 	/**
 	 * Return if there are constructor argument values defined for this bean.
 	 * @since 5.0.2
+	 * @see #getConstructorArgumentValues()
 	 */
 	default boolean hasConstructorArgumentValues() {
 		return !getConstructorArgumentValues().isEmpty();
@@ -236,8 +267,9 @@ public interface BeanDefinition extends AttributeAccessor, BeanMetadataElement {
 	MutablePropertyValues getPropertyValues();
 
 	/**
-	 * Return if there are property values values defined for this bean.
+	 * Return if there are property values defined for this bean.
 	 * @since 5.0.2
+	 * @see #getPropertyValues()
 	 */
 	default boolean hasPropertyValues() {
 		return !getPropertyValues().isEmpty();
@@ -271,7 +303,7 @@ public interface BeanDefinition extends AttributeAccessor, BeanMetadataElement {
 
 	/**
 	 * Set the role hint for this {@code BeanDefinition}. The role hint
-	 * provides the frameworks as well as tools with an indication of
+	 * provides the frameworks as well as tools an indication of
 	 * the role and importance of a particular {@code BeanDefinition}.
 	 * @since 5.1
 	 * @see #ROLE_APPLICATION
@@ -282,7 +314,7 @@ public interface BeanDefinition extends AttributeAccessor, BeanMetadataElement {
 
 	/**
 	 * Get the role hint for this {@code BeanDefinition}. The role hint
-	 * provides the frameworks as well as tools with an indication of
+	 * provides the frameworks as well as tools an indication of
 	 * the role and importance of a particular {@code BeanDefinition}.
 	 * @see #ROLE_APPLICATION
 	 * @see #ROLE_SUPPORT
@@ -332,7 +364,8 @@ public interface BeanDefinition extends AttributeAccessor, BeanMetadataElement {
 	boolean isPrototype();
 
 	/**
-	 * Return whether this bean is "abstract", that is, not meant to be instantiated.
+	 * Return whether this bean is "abstract", that is, not meant to be instantiated
+	 * itself but rather just serving as parent for concrete child bean definitions.
 	 */
 	boolean isAbstract();
 
@@ -345,7 +378,7 @@ public interface BeanDefinition extends AttributeAccessor, BeanMetadataElement {
 
 	/**
 	 * Return the originating BeanDefinition, or {@code null} if none.
-	 * Allows for retrieving the decorated bean definition, if any.
+	 * <p>Allows for retrieving the decorated bean definition, if any.
 	 * <p>Note that this method returns the immediate originator. Iterate through the
 	 * originator chain to find the original BeanDefinition as defined by the user.
 	 */

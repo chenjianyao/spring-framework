@@ -1,5 +1,5 @@
 /*
- * Copyright 2002-2019 the original author or authors.
+ * Copyright 2002-2024 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -26,25 +26,49 @@ import org.springframework.messaging.Message;
 import org.springframework.messaging.support.MessageBuilder;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.springframework.messaging.rsocket.annotation.support.RSocketFrameTypeMessageCondition.CONNECT_CONDITION;
+import static org.springframework.messaging.rsocket.annotation.support.RSocketFrameTypeMessageCondition.EMPTY_CONDITION;
 
 /**
- * Unit tests for {@link RSocketFrameTypeMessageCondition}.
+ * Tests for {@link RSocketFrameTypeMessageCondition}.
+ *
  * @author Rossen Stoyanchev
  */
-public class RSocketFrameTypeMessageConditionTests {
+class RSocketFrameTypeMessageConditionTests {
+
+	private static final RSocketFrameTypeMessageCondition FNF_RR_CONDITION =
+			new RSocketFrameTypeMessageCondition(FrameType.REQUEST_FNF, FrameType.REQUEST_RESPONSE);
+
 
 	@Test
-	public void getMatchingCondition() {
+	void getMatchingCondition() {
 		Message<?> message = message(FrameType.REQUEST_RESPONSE);
-		RSocketFrameTypeMessageCondition condition = condition(FrameType.REQUEST_FNF, FrameType.REQUEST_RESPONSE);
-		RSocketFrameTypeMessageCondition actual = condition.getMatchingCondition(message);
+		RSocketFrameTypeMessageCondition actual = FNF_RR_CONDITION.getMatchingCondition(message);
 
 		assertThat(actual).isNotNull();
 		assertThat(actual.getFrameTypes()).hasSize(1).containsOnly(FrameType.REQUEST_RESPONSE);
 	}
 
 	@Test
-	public void compareTo() {
+	void getMatchingConditionEmpty() {
+		Message<?> message = message(FrameType.REQUEST_RESPONSE);
+		RSocketFrameTypeMessageCondition actual = EMPTY_CONDITION.getMatchingCondition(message);
+
+		assertThat(actual).isNull();
+	}
+
+	@Test
+	void combine() {
+
+		assertThat(EMPTY_CONDITION.combine(CONNECT_CONDITION).getFrameTypes())
+				.containsExactly(FrameType.SETUP, FrameType.METADATA_PUSH);
+
+		assertThat(EMPTY_CONDITION.combine(new RSocketFrameTypeMessageCondition(FrameType.REQUEST_FNF)).getFrameTypes())
+				.containsExactly(FrameType.REQUEST_FNF);
+	}
+
+	@Test
+	void compareTo() {
 		Message<byte[]> message = message(null);
 		assertThat(condition(FrameType.SETUP).compareTo(condition(FrameType.SETUP), message)).isEqualTo(0);
 		assertThat(condition(FrameType.SETUP).compareTo(condition(FrameType.METADATA_PUSH), message)).isEqualTo(0);

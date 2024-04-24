@@ -1,5 +1,5 @@
 /*
- * Copyright 2002-2019 the original author or authors.
+ * Copyright 2002-2023 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,17 +17,19 @@
 package org.springframework.cache.transaction;
 
 import java.util.concurrent.Callable;
+import java.util.concurrent.CompletableFuture;
+import java.util.function.Supplier;
 
 import org.springframework.cache.Cache;
 import org.springframework.lang.Nullable;
-import org.springframework.transaction.support.TransactionSynchronizationAdapter;
+import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.util.Assert;
 
 /**
  * Cache decorator which synchronizes its {@link #put}, {@link #evict} and
  * {@link #clear} operations with Spring-managed transactions (through Spring's
- * {@link TransactionSynchronizationManager}, performing the actual cache
+ * {@link TransactionSynchronizationManager}), performing the actual cache
  * put/evict/clear operation only in the after-commit phase of a successful
  * transaction. If no transaction is active, {@link #put}, {@link #evict} and
  * {@link #clear} operations will be performed immediately, as usual.
@@ -81,6 +83,7 @@ public class TransactionAwareCacheDecorator implements Cache {
 	}
 
 	@Override
+	@Nullable
 	public <T> T get(Object key, @Nullable Class<T> type) {
 		return this.targetCache.get(key, type);
 	}
@@ -92,9 +95,20 @@ public class TransactionAwareCacheDecorator implements Cache {
 	}
 
 	@Override
+	@Nullable
+	public CompletableFuture<?> retrieve(Object key) {
+		return this.targetCache.retrieve(key);
+	}
+
+	@Override
+	public <T> CompletableFuture<T> retrieve(Object key, Supplier<CompletableFuture<T>> valueLoader) {
+		return this.targetCache.retrieve(key, valueLoader);
+	}
+
+	@Override
 	public void put(final Object key, @Nullable final Object value) {
 		if (TransactionSynchronizationManager.isSynchronizationActive()) {
-			TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronizationAdapter() {
+			TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
 				@Override
 				public void afterCommit() {
 					TransactionAwareCacheDecorator.this.targetCache.put(key, value);
@@ -115,7 +129,7 @@ public class TransactionAwareCacheDecorator implements Cache {
 	@Override
 	public void evict(final Object key) {
 		if (TransactionSynchronizationManager.isSynchronizationActive()) {
-			TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronizationAdapter() {
+			TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
 				@Override
 				public void afterCommit() {
 					TransactionAwareCacheDecorator.this.targetCache.evict(key);
@@ -135,7 +149,7 @@ public class TransactionAwareCacheDecorator implements Cache {
 	@Override
 	public void clear() {
 		if (TransactionSynchronizationManager.isSynchronizationActive()) {
-			TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronizationAdapter() {
+			TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
 				@Override
 				public void afterCommit() {
 					targetCache.clear();

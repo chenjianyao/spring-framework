@@ -1,5 +1,5 @@
 /*
- * Copyright 2002-2019 the original author or authors.
+ * Copyright 2002-2024 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,7 +21,6 @@ import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
-import org.testng.ITestNGListener;
 import org.testng.TestNG;
 
 import org.springframework.beans.factory.annotation.Autowired;
@@ -53,8 +52,8 @@ import static org.springframework.test.context.cache.ContextCacheTestUtils.reset
  */
 class ClassLevelDirtiesContextTestNGTests {
 
-	private static final AtomicInteger cacheHits = new AtomicInteger(0);
-	private static final AtomicInteger cacheMisses = new AtomicInteger(0);
+	private static final AtomicInteger cacheHits = new AtomicInteger();
+	private static final AtomicInteger cacheMisses = new AtomicInteger();
 
 
 	@BeforeAll
@@ -68,7 +67,7 @@ class ClassLevelDirtiesContextTestNGTests {
 	}
 
 	@Test
-	void verifyDirtiesContextBehavior() throws Exception {
+	void verifyDirtiesContextBehavior() {
 
 		assertBehaviorForCleanTestCase();
 
@@ -140,7 +139,7 @@ class ClassLevelDirtiesContextTestNGTests {
 
 		final TrackingTestNGTestListener listener = new TrackingTestNGTestListener();
 		final TestNG testNG = new TestNG();
-		testNG.addListener((ITestNGListener) listener);
+		testNG.addListener(listener);
 		testNG.setTestClasses(new Class<?>[] { testClass });
 		testNG.setVerbose(0);
 		testNG.run();
@@ -166,7 +165,7 @@ class ClassLevelDirtiesContextTestNGTests {
 	@TestExecutionListeners(listeners = { DependencyInjectionTestExecutionListener.class,
 		DirtiesContextTestExecutionListener.class }, inheritListeners = false)
 	@ContextConfiguration
-	static abstract class BaseTestCase extends AbstractTestNGSpringContextTests {
+	abstract static class BaseTestCase extends AbstractTestNGSpringContextTests {
 
 		@Configuration
 		static class Config {

@@ -1,5 +1,5 @@
 /*
- * Copyright 2002-2019 the original author or authors.
+ * Copyright 2002-2024 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -13,6 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 package org.springframework.messaging.rsocket;
 
 import java.time.Duration;
@@ -31,7 +32,7 @@ import org.springframework.core.io.buffer.PooledDataBuffer;
 import org.springframework.util.ObjectUtils;
 
 /**
- * Unlike {@link org.springframework.core.io.buffer.LeakAwareDataBufferFactory}
+ * Unlike {@link org.springframework.core.testfixture.io.buffer.LeakAwareDataBufferFactory}
  * this one is an instance of {@link NettyDataBufferFactory} which is necessary
  * since {@link PayloadUtils} does instanceof checks, and that also allows
  * intercepting {@link NettyDataBufferFactory#wrap(ByteBuf)}.
@@ -51,8 +52,8 @@ public class LeakAwareNettyDataBufferFactory extends NettyDataBufferFactory {
 		while (true) {
 			try {
 				this.created.forEach(info -> {
-					if (((PooledDataBuffer) info.getDataBuffer()).isAllocated()) {
-						throw info.getError();
+					if (((PooledDataBuffer) info.dataBuffer()).isAllocated()) {
+						throw info.error();
 					}
 				});
 				break;
@@ -72,6 +73,7 @@ public class LeakAwareNettyDataBufferFactory extends NettyDataBufferFactory {
 
 
 	@Override
+	@SuppressWarnings("deprecation")
 	public NettyDataBuffer allocateBuffer() {
 		return (NettyDataBuffer) recordHint(super.allocateBuffer());
 	}
@@ -104,23 +106,7 @@ public class LeakAwareNettyDataBufferFactory extends NettyDataBufferFactory {
 	}
 
 
-	private static class DataBufferLeakInfo {
-
-		private final DataBuffer dataBuffer;
-
-		private final AssertionError error;
-
-		DataBufferLeakInfo(DataBuffer dataBuffer, AssertionError error) {
-			this.dataBuffer = dataBuffer;
-			this.error = error;
-		}
-
-		DataBuffer getDataBuffer() {
-			return this.dataBuffer;
-		}
-
-		AssertionError getError() {
-			return this.error;
-		}
+	private record DataBufferLeakInfo(DataBuffer dataBuffer, AssertionError error) {
 	}
+
 }

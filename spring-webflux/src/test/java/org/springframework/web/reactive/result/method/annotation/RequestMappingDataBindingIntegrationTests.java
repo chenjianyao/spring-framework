@@ -29,7 +29,6 @@ import org.springframework.context.annotation.ComponentScan;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
-import org.springframework.http.server.reactive.bootstrap.HttpServer;
 import org.springframework.util.LinkedMultiValueMap;
 import org.springframework.util.MultiValueMap;
 import org.springframework.validation.Errors;
@@ -41,6 +40,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.reactive.config.EnableWebFlux;
+import org.springframework.web.testfixture.http.server.reactive.bootstrap.HttpServer;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -110,8 +110,8 @@ class RequestMappingDataBindingIntegrationTests extends AbstractRequestMappingIn
 		}
 
 		@ModelAttribute
-		public Mono<Foo> addFooAttribute(@PathVariable("id") Optional<Long> optiponalId) {
-			return optiponalId.map(id -> Mono.just(new Foo(id))).orElse(Mono.empty());
+		public Mono<Foo> addFooAttribute(@PathVariable("id") Optional<Long> optionalId) {
+			return optionalId.map(id -> Mono.just(new Foo(id))).orElse(Mono.empty());
 		}
 
 		@PostMapping("/foos/{id}")

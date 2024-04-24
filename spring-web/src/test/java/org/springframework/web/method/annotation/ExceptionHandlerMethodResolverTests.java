@@ -1,5 +1,5 @@
 /*
- * Copyright 2002-2019 the original author or authors.
+ * Copyright 2002-2024 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,9 +21,8 @@ import java.io.IOException;
 import java.net.BindException;
 import java.net.SocketException;
 
-import javax.servlet.http.HttpServletRequest;
-import javax.servlet.http.HttpServletResponse;
-
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
 import org.junit.jupiter.api.Test;
 
 import org.springframework.stereotype.Controller;
@@ -38,24 +37,24 @@ import static org.assertj.core.api.Assertions.assertThatIllegalStateException;
  *
  * @author Rossen Stoyanchev
  */
-public class ExceptionHandlerMethodResolverTests {
+class ExceptionHandlerMethodResolverTests {
 
 	@Test
-	public void resolveMethodFromAnnotation() {
+	void resolveMethodFromAnnotation() {
 		ExceptionHandlerMethodResolver resolver = new ExceptionHandlerMethodResolver(ExceptionController.class);
 		IOException exception = new IOException();
 		assertThat(resolver.resolveMethod(exception).getName()).isEqualTo("handleIOException");
 	}
 
 	@Test
-	public void resolveMethodFromArgument() {
+	void resolveMethodFromArgument() {
 		ExceptionHandlerMethodResolver resolver = new ExceptionHandlerMethodResolver(ExceptionController.class);
 		IllegalArgumentException exception = new IllegalArgumentException();
 		assertThat(resolver.resolveMethod(exception).getName()).isEqualTo("handleIllegalArgumentException");
 	}
 
 	@Test
-	public void resolveMethodExceptionSubType() {
+	void resolveMethodExceptionSubType() {
 		ExceptionHandlerMethodResolver resolver = new ExceptionHandlerMethodResolver(ExceptionController.class);
 		IOException ioException = new FileNotFoundException();
 		assertThat(resolver.resolveMethod(ioException).getName()).isEqualTo("handleIOException");
@@ -64,14 +63,14 @@ public class ExceptionHandlerMethodResolverTests {
 	}
 
 	@Test
-	public void resolveMethodBestMatch() {
+	void resolveMethodBestMatch() {
 		ExceptionHandlerMethodResolver resolver = new ExceptionHandlerMethodResolver(ExceptionController.class);
 		SocketException exception = new SocketException();
 		assertThat(resolver.resolveMethod(exception).getName()).isEqualTo("handleSocketException");
 	}
 
 	@Test
-	public void resolveMethodNoMatch() {
+	void resolveMethodNoMatch() {
 		ExceptionHandlerMethodResolver resolver = new ExceptionHandlerMethodResolver(ExceptionController.class);
 		Exception exception = new Exception();
 		assertThat(resolver.resolveMethod(exception)).as("1st lookup").isNull();
@@ -79,20 +78,32 @@ public class ExceptionHandlerMethodResolverTests {
 	}
 
 	@Test
-	public void resolveMethodInherited() {
+	void resolveMethodExceptionCause() {
+		ExceptionHandlerMethodResolver resolver = new ExceptionHandlerMethodResolver(ExceptionController.class);
+
+		SocketException bindException = new BindException();
+		bindException.initCause(new FileNotFoundException());
+
+		Exception exception = new Exception(new Exception(new Exception(bindException)));
+
+		assertThat(resolver.resolveMethod(exception).getName()).isEqualTo("handleSocketException");
+	}
+
+	@Test
+	void resolveMethodInherited() {
 		ExceptionHandlerMethodResolver resolver = new ExceptionHandlerMethodResolver(InheritedController.class);
 		IOException exception = new IOException();
 		assertThat(resolver.resolveMethod(exception).getName()).isEqualTo("handleIOException");
 	}
 
 	@Test
-	public void ambiguousExceptionMapping() {
+	void ambiguousExceptionMapping() {
 		assertThatIllegalStateException().isThrownBy(() ->
 				new ExceptionHandlerMethodResolver(AmbiguousController.class));
 	}
 
 	@Test
-	public void noExceptionMapping() {
+	void noExceptionMapping() {
 		assertThatIllegalStateException().isThrownBy(() ->
 				new ExceptionHandlerMethodResolver(NoExceptionController.class));
 	}
@@ -121,7 +132,7 @@ public class ExceptionHandlerMethodResolverTests {
 	static class InheritedController extends ExceptionController {
 
 		@Override
-		public void handleIOException()	{
+		public void handleIOException() {
 		}
 	}
 
@@ -132,8 +143,7 @@ public class ExceptionHandlerMethodResolverTests {
 		public void handle() {}
 
 		@ExceptionHandler({BindException.class, IllegalArgumentException.class})
-		public String handle1(Exception ex, HttpServletRequest request, HttpServletResponse response)
-				throws IOException {
+		public String handle1(Exception ex, HttpServletRequest request, HttpServletResponse response) {
 			return ClassUtils.getShortName(ex.getClass());
 		}
 

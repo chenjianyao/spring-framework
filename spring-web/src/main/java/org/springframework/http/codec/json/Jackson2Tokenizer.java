@@ -1,5 +1,5 @@
 /*
- * Copyright 2002-2019 the original author or authors.
+ * Copyright 2002-2023 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -26,10 +26,13 @@ import com.fasterxml.jackson.core.JsonParser;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.JsonToken;
 import com.fasterxml.jackson.core.async.ByteArrayFeeder;
+import com.fasterxml.jackson.core.async.ByteBufferFeeder;
+import com.fasterxml.jackson.core.async.NonBlockingInputFeeder;
 import com.fasterxml.jackson.databind.DeserializationContext;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.deser.DefaultDeserializationContext;
 import com.fasterxml.jackson.databind.util.TokenBuffer;
+import com.fasterxml.jackson.dataformat.smile.SmileFactory;
 import reactor.core.Exceptions;
 import reactor.core.publisher.Flux;
 
@@ -54,47 +57,57 @@ final class Jackson2Tokenizer {
 
 	private final DeserializationContext deserializationContext;
 
+	private final NonBlockingInputFeeder inputFeeder;
+
 	private final boolean tokenizeArrayElements;
 
-	private TokenBuffer tokenBuffer;
+	private final boolean forceUseOfBigDecimal;
+
+	private final int maxInMemorySize;
 
 	private int objectDepth;
 
 	private int arrayDepth;
 
-	private final int maxInMemorySize;
-
 	private int byteCount;
 
-
-	// TODO: change to ByteBufferFeeder when supported by Jackson
-	// See https://github.com/FasterXML/jackson-core/issues/478
-	private final ByteArrayFeeder inputFeeder;
+	private TokenBuffer tokenBuffer;
 
 
 	private Jackson2Tokenizer(JsonParser parser, DeserializationContext deserializationContext,
-			boolean tokenizeArrayElements, int maxInMemorySize) {
+			boolean tokenizeArrayElements, boolean forceUseOfBigDecimal, int maxInMemorySize) {
 
 		this.parser = parser;
 		this.deserializationContext = deserializationContext;
+		this.inputFeeder = this.parser.getNonBlockingInputFeeder();
 		this.tokenizeArrayElements = tokenizeArrayElements;
-		this.tokenBuffer = new TokenBuffer(parser, deserializationContext);
-		this.inputFeeder = (ByteArrayFeeder) this.parser.getNonBlockingInputFeeder();
+		this.forceUseOfBigDecimal = forceUseOfBigDecimal;
 		this.maxInMemorySize = maxInMemorySize;
+		this.tokenBuffer = createToken();
 	}
 
 
-	private List<TokenBuffer> tokenize(DataBuffer dataBuffer) {
-		int bufferSize = dataBuffer.readableByteCount();
-		byte[] bytes = new byte[bufferSize];
-		dataBuffer.read(bytes);
-		DataBufferUtils.release(dataBuffer);
 
+	private List<TokenBuffer> tokenize(DataBuffer dataBuffer) {
 		try {
-			this.inputFeeder.feedInput(bytes, 0, bytes.length);
-			List<TokenBuffer> result = parseTokenBufferFlux();
-			assertInMemorySize(bufferSize, result);
-			return result;
+			int bufferSize = dataBuffer.readableByteCount();
+			List<TokenBuffer> tokens = new ArrayList<>();
+			if (this.inputFeeder instanceof ByteBufferFeeder byteBufferFeeder) {
+				try (DataBuffer.ByteBufferIterator iterator = dataBuffer.readableByteBuffers()) {
+					while (iterator.hasNext()) {
+						byteBufferFeeder.feedInput(iterator.next());
+						parseTokens(tokens);
+					}
+				}
+			}
+			else if (this.inputFeeder instanceof ByteArrayFeeder byteArrayFeeder) {
+				byte[] bytes = new byte[bufferSize];
+				dataBuffer.read(bytes);
+				byteArrayFeeder.feedInput(bytes, 0, bufferSize);
+				parseTokens(tokens);
+			}
+			assertInMemorySize(bufferSize, tokens);
+			return tokens;
 		}
 		catch (JsonProcessingException ex) {
 			throw new DecodingException("JSON decoding error: " + ex.getOriginalMessage(), ex);
@@ -102,13 +115,18 @@ final class Jackson2Tokenizer {
 		catch (IOException ex) {
 			throw Exceptions.propagate(ex);
 		}
+		finally {
+			DataBufferUtils.release(dataBuffer);
+		}
 	}
 
 	private Flux<TokenBuffer> endOfInput() {
 		return Flux.defer(() -> {
 			this.inputFeeder.endOfInput();
 			try {
-				return Flux.fromIterable(parseTokenBufferFlux());
+				List<TokenBuffer> tokens = new ArrayList<>();
+				parseTokens(tokens);
+				return Flux.fromIterable(tokens);
 			}
 			catch (JsonProcessingException ex) {
 				throw new DecodingException("JSON decoding error: " + ex.getOriginalMessage(), ex);
@@ -119,41 +137,38 @@ final class Jackson2Tokenizer {
 		});
 	}
 
-	private List<TokenBuffer> parseTokenBufferFlux() throws IOException {
-		List<TokenBuffer> result = new ArrayList<>();
-
-		while (true) {
+	private void parseTokens(List<TokenBuffer> tokens) throws IOException {
+		// SPR-16151: Smile data format uses null to separate documents
+		boolean previousNull = false;
+		while (!this.parser.isClosed()) {
 			JsonToken token = this.parser.nextToken();
-			// SPR-16151: Smile data format uses null to separate documents
 			if (token == JsonToken.NOT_AVAILABLE ||
-					(token == null && (token = this.parser.nextToken()) == null)) {
+					token == null && previousNull) {
 				break;
+			}
+			else if (token == null ) { // !previousNull
+				previousNull = true;
+				continue;
+			}
+			else {
+				previousNull = false;
 			}
 			updateDepth(token);
 			if (!this.tokenizeArrayElements) {
-				processTokenNormal(token, result);
+				processTokenNormal(token, tokens);
 			}
 			else {
-				processTokenArray(token, result);
+				processTokenArray(token, tokens);
 			}
 		}
-		return result;
 	}
 
 	private void updateDepth(JsonToken token) {
 		switch (token) {
-			case START_OBJECT:
-				this.objectDepth++;
-				break;
-			case END_OBJECT:
-				this.objectDepth--;
-				break;
-			case START_ARRAY:
-				this.arrayDepth++;
-				break;
-			case END_ARRAY:
-				this.arrayDepth--;
-				break;
+			case START_OBJECT -> this.objectDepth++;
+			case END_OBJECT -> this.objectDepth--;
+			case START_ARRAY -> this.arrayDepth++;
+			case END_ARRAY -> this.arrayDepth--;
 		}
 	}
 
@@ -162,9 +177,8 @@ final class Jackson2Tokenizer {
 
 		if ((token.isStructEnd() || token.isScalarValue()) && this.objectDepth == 0 && this.arrayDepth == 0) {
 			result.add(this.tokenBuffer);
-			this.tokenBuffer = new TokenBuffer(this.parser, this.deserializationContext);
+			this.tokenBuffer = createToken();
 		}
-
 	}
 
 	private void processTokenArray(JsonToken token, List<TokenBuffer> result) throws IOException {
@@ -175,8 +189,14 @@ final class Jackson2Tokenizer {
 		if (this.objectDepth == 0 && (this.arrayDepth == 0 || this.arrayDepth == 1) &&
 				(token == JsonToken.END_OBJECT || token.isScalarValue())) {
 			result.add(this.tokenBuffer);
-			this.tokenBuffer = new TokenBuffer(this.parser, this.deserializationContext);
+			this.tokenBuffer = createToken();
 		}
+	}
+
+	private TokenBuffer createToken() {
+		TokenBuffer tokenBuffer = new TokenBuffer(this.parser, this.deserializationContext);
+		tokenBuffer.forceUseOfBigDecimal(this.forceUseOfBigDecimal);
+		return tokenBuffer;
 	}
 
 	private boolean isTopLevelArrayToken(JsonToken token) {
@@ -214,19 +234,30 @@ final class Jackson2Tokenizer {
 	 * @param objectMapper the current mapper instance
 	 * @param tokenizeArrays if {@code true} and the "top level" JSON object is
 	 * an array, each element is returned individually immediately after it is received
+	 * @param forceUseOfBigDecimal if {@code true}, any floating point values encountered
+	 * in source will use {@link java.math.BigDecimal}
+	 * @param maxInMemorySize maximum memory size
 	 * @return the resulting token buffers
 	 */
 	public static Flux<TokenBuffer> tokenize(Flux<DataBuffer> dataBuffers, JsonFactory jsonFactory,
-			ObjectMapper objectMapper, boolean tokenizeArrays, int maxInMemorySize) {
+			ObjectMapper objectMapper, boolean tokenizeArrays, boolean forceUseOfBigDecimal, int maxInMemorySize) {
 
 		try {
-			JsonParser parser = jsonFactory.createNonBlockingByteArrayParser();
-			DeserializationContext context = objectMapper.getDeserializationContext();
-			if (context instanceof DefaultDeserializationContext) {
-				context = ((DefaultDeserializationContext) context).createInstance(
-						objectMapper.getDeserializationConfig(), parser, objectMapper.getInjectableValues());
+			JsonParser parser;
+			if (jsonFactory.getFormatName().equals(SmileFactory.FORMAT_NAME_SMILE)) {
+				// ByteBufferFeeder is not supported for Smile
+				parser = jsonFactory.createNonBlockingByteArrayParser();
 			}
-			Jackson2Tokenizer tokenizer = new Jackson2Tokenizer(parser, context, tokenizeArrays, maxInMemorySize);
+			else {
+				parser = jsonFactory.createNonBlockingByteBufferParser();
+			}
+			DeserializationContext context = objectMapper.getDeserializationContext();
+			if (context instanceof DefaultDeserializationContext ddc) {
+				context = ddc.createInstance(objectMapper.getDeserializationConfig(),
+						parser, objectMapper.getInjectableValues());
+			}
+			Jackson2Tokenizer tokenizer =
+					new Jackson2Tokenizer(parser, context, tokenizeArrays, forceUseOfBigDecimal, maxInMemorySize);
 			return dataBuffers.concatMapIterable(tokenizer::tokenize).concatWith(tokenizer.endOfInput());
 		}
 		catch (IOException ex) {
