@@ -22,10 +22,12 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Iterator;
+import java.util.LinkedList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Objects;
-import java.util.StringTokenizer;
 import java.util.function.Consumer;
+import java.util.function.IntPredicate;
 
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
@@ -159,7 +161,7 @@ final class UrlParser {
 		while (!this.stopMainLoop && this.pointer <= this.input.length()) {
 			int c;
 			if (this.pointer < this.input.length()) {
-				c = this.input.charAt(this.pointer);
+				c = this.input.codePointAt(this.pointer);
 			}
 			else {
 				c = EOF;
@@ -177,7 +179,7 @@ final class UrlParser {
 	void sanitizeInput(boolean removeC0ControlOrSpace) {
 		boolean strip = true;
 		for (int i = 0; i < this.input.length(); i++) {
-			char c = this.input.charAt(i);
+			int c = this.input.codePointAt(i);
 			boolean isSpaceOrC0 = c == ' ' || isC0Control(c);
 			boolean isTabOrNL = c == '\t' || isNewline(c);
 			if ((strip && isSpaceOrC0) || isTabOrNL) {
@@ -202,7 +204,7 @@ final class UrlParser {
 		}
 		if (removeC0ControlOrSpace) {
 			for (int i = this.input.length() - 1; i >= 0; i--) {
-				char c = this.input.charAt(i);
+				int c = this.input.codePointAt(i);
 				if (c == ' ' || isC0Control(c)) {
 					if (validate()) {
 						// If input contains any (leading or) trailing C0 control or space, invalid-URL-unit validation error.
@@ -219,38 +221,85 @@ final class UrlParser {
 	}
 
 	private void setState(State newState) {
-		if (logger.isDebugEnabled()) {
+		if (logger.isTraceEnabled()) {
 			String c;
 			if (this.pointer < this.input.length()) {
-				c = Character.toString(this.input.charAt(this.pointer));
+				c = Character.toString(this.input.codePointAt(this.pointer));
 			}
 			else {
 				c = "EOF";
 			}
-			logger.debug("Changing state from " + this.state + " to " + newState + " (cur: " + c + " prev: " + this.previousState + ")");
+			logger.trace("Changing state from " + this.state + " to " + newState + " (cur: " + c + " prev: " + this.previousState + ")");
 		}
 		// EXTRA: we keep the previous state, to ensure that the parser can escape from malformed URI templates
 		this.previousState = this.state;
 		this.state = newState;
 	}
 
-	private static List<String> tokenize(String str, String delimiters) {
-		StringTokenizer st = new StringTokenizer(str, delimiters);
-		List<String> tokens = new ArrayList<>();
-		while (st.hasMoreTokens()) {
-			tokens.add(st.nextToken());
+	private static LinkedList<String> strictSplit(String input, int delimiter) {
+		// Let position be a position variable for input, initially pointing at the start of input.
+		int position = 0;
+		// Let tokens be a list of strings, initially empty.
+		LinkedList<String> tokens = new LinkedList<>();
+		// Let token be the result of collecting a sequence of code points that are not equal to delimiter from input, given position.
+		int delIdx = input.indexOf(delimiter, position);
+		String token = (delIdx != EOF) ? input.substring(position, delIdx) : input.substring(position);
+		position = delIdx;
+		// Append token to tokens.
+		tokens.add(token);
+		// While position is not past the end of input:
+		while (position != EOF) {
+			// Assert: the code point at position within input is delimiter.
+			Assert.state(input.codePointAt(position) == delimiter, "Codepoint is not a delimiter");
+			// Advance position by 1.
+			position++;
+			delIdx = input.indexOf(delimiter, position);
+			// Let token be the result of collecting a sequence of code points that are not equal to delimiter from input, given position.
+			token = (delIdx != EOF) ? input.substring(position, delIdx) : input.substring(position);
+			position = delIdx;
+			// Append token to tokens.
+			tokens.add(token);
 		}
 		return tokens;
 	}
 
 	private static String domainToAscii(String domain, boolean beStrict) {
+		// If beStrict is false, domain is an ASCII string, and strictly splitting domain on U+002E (.) does not produce any item that starts with an ASCII case-insensitive match for "xn--", this step is equivalent to ASCII lowercasing domain.
+		if (!beStrict && containsOnlyAscii(domain)) {
+			int dotIdx = domain.indexOf('.');
+			boolean onlyLowerCase = true;
+			while (dotIdx != -1) {
+				if (domain.length() - dotIdx > 4) {
+					// ASCII case-insensitive match for "xn--"
+					int ch0 = domain.codePointAt(dotIdx + 1);
+					int ch1 = domain.codePointAt(dotIdx + 2);
+					int ch2 = domain.codePointAt(dotIdx + 3);
+					int ch3 = domain.codePointAt(dotIdx + 4);
+					if ((ch0 == 'x' || ch0 == 'X') &&
+							(ch1 == 'n' || ch1 == 'N') &&
+							ch2 == '-' && ch3 == '_') {
+						onlyLowerCase = false;
+						break;
+					}
+				}
+				dotIdx = domain.indexOf('.', dotIdx + 1);
+			}
+			if (onlyLowerCase) {
+				return domain.toLowerCase(Locale.ENGLISH);
+			}
+		}
 		// Let result be the result of running Unicode ToASCII (https://www.unicode.org/reports/tr46/#ToASCII) with domain_name set to domain, UseSTD3ASCIIRules set to beStrict, CheckHyphens set to false, CheckBidi set to true, CheckJoiners set to true, Transitional_Processing set to false, and VerifyDnsLength set to beStrict. [UTS46]
 		int flag = 0;
 		if (beStrict) {
 			flag |= IDN.USE_STD3_ASCII_RULES;
 		}
 		// Implementation note: implementing Unicode ToASCII is beyond the scope of this parser, we use java.net.IDN.toASCII
-		return IDN.toASCII(domain, flag);
+		try {
+			return IDN.toASCII(domain, flag);
+		}
+		catch (IllegalArgumentException ex) {
+			throw new InvalidUrlException("Could not convert \"" + domain + "\" to ASCII: " + ex.getMessage(), ex);
+		}
 	}
 
 	private boolean validate() {
@@ -284,6 +333,50 @@ final class UrlParser {
 		throw new InvalidUrlException(message.toString());
 	}
 
+	/**
+	 * The C0 control percent-encode set are the C0 controls and all code points greater than U+007E (~).
+	 */
+	private static boolean c0ControlPercentEncodeSet(int ch) {
+		return isC0Control(ch) || Integer.compareUnsigned(ch, '~') > 0;
+	}
+
+	/**
+	 * The fragment percent-encode set is the C0 control percent-encode set and U+0020 SPACE, U+0022 ("), U+003C (<), U+003E (>), and U+0060 (`).
+	 */
+	private static boolean fragmentPercentEncodeSet(int ch) {
+		return c0ControlPercentEncodeSet(ch) || ch == ' ' || ch == '"' || ch == '<' || ch == '>' || ch == '`';
+	}
+
+	/**
+	 * The query percent-encode set is the C0 control percent-encode set and U+0020 SPACE, U+0022 ("), U+0023 (#), U+003C (<), and U+003E (>).
+	 */
+	private static boolean queryPercentEncodeSet(int ch) {
+		return c0ControlPercentEncodeSet(ch) || ch == ' ' || ch == '"' || ch == '#' || ch == '<' || ch == '>';
+	}
+
+	/**
+	 * The special-query percent-encode set is the query percent-encode set and U+0027 (').
+	 */
+	private static boolean specialQueryPercentEncodeSet(int ch) {
+		return queryPercentEncodeSet(ch) || ch == '\'';
+	}
+
+
+	/**
+	 * The path percent-encode set is the query percent-encode set and U+003F (?), U+0060 (`), U+007B ({), and U+007D (}).
+	 */
+	private static boolean pathPercentEncodeSet(int ch) {
+		return queryPercentEncodeSet(ch) || ch == '?' || ch == '`' || ch == '{' || ch == '}';
+	}
+
+	/**
+	 * The userinfo percent-encode set is the path percent-encode set and U+002F (/), U+003A (:), U+003B (;), U+003D (=), U+0040 (@), U+005B ([) to U+005E (^), inclusive, and U+007C (|).
+	 */
+	private static boolean userinfoPercentEncodeSet(int ch) {
+		return pathPercentEncodeSet(ch) || ch == '/' || ch == ':' || ch == ';' || ch == '=' || ch == '@' ||
+				(Integer.compareUnsigned(ch, '[') >= 0 && Integer.compareUnsigned(ch, '^') <= 0) || ch == '|';
+	}
+
 	private static boolean isC0Control(int ch) {
 		return ch >= 0 && ch <= 0x1F;
 	}
@@ -299,12 +392,27 @@ final class UrlParser {
 
 	private static boolean containsOnlyAsciiDigits(CharSequence string) {
 		for (int i=0; i< string.length(); i++ ) {
-			char ch = string.charAt(i);
+			int ch = codePointAt(string, i);
 			if (!isAsciiDigit(ch)) {
 				return false;
 			}
 		}
 		return true;
+	}
+
+	private static boolean containsOnlyAscii(String string) {
+		for (int i = 0; i < string.length(); i++) {
+			int ch = string.codePointAt(i);
+			if (!isAsciiCodePoint(ch)) {
+				return false;
+			}
+		}
+		return true;
+	}
+
+	private static boolean isAsciiCodePoint(int ch) {
+		// An ASCII code point is a code point in the range U+0000 NULL to U+007F DELETE, inclusive.
+		return Integer.compareUnsigned(ch, 0) >= 0 && Integer.compareUnsigned(ch, 127) <= 0;
 	}
 
 	private static boolean isAsciiDigit(int ch) {
@@ -374,12 +482,16 @@ final class UrlParser {
 		}
 	}
 
+	private void append(String s) {
+		this.buffer.append(s);
+	}
+
 	private void append(char ch) {
 		this.buffer.append(ch);
 	}
 
 	private void append(int ch) {
-		this.buffer.append((char) ch);
+		this.buffer.appendCodePoint(ch);
 	}
 
 	private void prepend(String s) {
@@ -393,83 +505,164 @@ final class UrlParser {
 	private int remaining(int deltaPos) {
 		int pos = this.pointer + deltaPos + 1;
 		if (pos < this.input.length()) {
-			return this.input.charAt(pos);
+			return this.input.codePointAt(pos);
 		}
 		else {
 			return EOF;
 		}
 	}
 
-	private String percentEncode(int c, HierarchicalUriComponents.Type type) {
-		return percentEncode(Character.toString(c), type);
+	private static String percentDecode(String input) {
+		try {
+			return UriUtils.decode(input, StandardCharsets.UTF_8);
+		}
+		catch (IllegalArgumentException ex) {
+			throw new InvalidUrlException("Could not decode \"" + input + "\": " + ex.getMessage(), ex);
+		}
 	}
 
-	private String percentEncode(String source, HierarchicalUriComponents.Type type) {
-		if (this.encoding != null) {
-			return HierarchicalUriComponents.encodeUriComponent(source, this.encoding, type);
+	@Nullable
+	private String percentEncode(int c, IntPredicate percentEncodeSet) {
+		if (this.encoding == null) {
+			return null;
 		}
 		else {
-			return source;
+			return percentEncode(Character.toString(c), percentEncodeSet);
+		}
+	}
+
+	private String percentEncode(String input, IntPredicate percentEncodeSet) {
+		if (this.encoding == null) {
+			return input;
+		}
+		else {
+			byte[] bytes = input.getBytes(this.encoding);
+			boolean original = true;
+			for (byte b : bytes) {
+				if (percentEncodeSet.test(b)) {
+					original = false;
+					break;
+				}
+			}
+			if (original) {
+				return input;
+			}
+			StringBuilder output = new StringBuilder();
+			for (byte b : bytes) {
+				if (!percentEncodeSet.test(b)) {
+					output.append((char)b);
+				}
+				else {
+					output.append('%');
+					char hex1 = Character.toUpperCase(Character.forDigit((b >> 4) & 0xF, 16));
+					char hex2 = Character.toUpperCase(Character.forDigit(b & 0xF, 16));
+					output.append(hex1);
+					output.append(hex2);
+				}
+			}
+			return output.toString();
 		}
 	}
 
 	/**
-	 * A single-dot URL path segment is a URL path segment that is "." or an ASCII case-insensitive match for "%2e".
+	 * A single-dot URL path segment is a URL path segment that is "[/]." or an ASCII case-insensitive match for "[/]%2e".
 	 */
 	private static boolean isSingleDotPathSegment(StringBuilder b) {
 		int len = b.length();
-		if (len == 1) {
-			char ch0 = b.charAt(0);
-			return ch0 == '.';
-		}
-		else if (len == 3) {
-			//  ASCII case-insensitive match for "%2e".
-			char ch0 = b.charAt(0);
-			char ch1 = b.charAt(1);
-			char ch2 = b.charAt(2);
-			return ch0 == '%' && ch1 == '2' && (ch2 == 'e' || ch2 == 'E');
-		}
-		else {
-			return false;
+		switch (len) {
+			case 1 -> {
+				int ch0 = b.codePointAt(0);
+				return ch0 == '.';
+			}
+			case 2 -> {
+				int ch0 = b.codePointAt(0);
+				int ch1 = b.codePointAt(1);
+				return ch0 == '/' && ch1 == '.';
+			}
+			case 3 -> {
+				//  ASCII case-insensitive match for "%2e".
+				int ch0 = b.codePointAt(0);
+				int ch1 = b.codePointAt(1);
+				int ch2 = b.codePointAt(2);
+				return ch0 == '%' && ch1 == '2' && (ch2 == 'e' || ch2 == 'E');
+			}
+			case 4 -> {
+				//  ASCII case-insensitive match for "/%2e".
+				int ch0 = b.codePointAt(0);
+				int ch1 = b.codePointAt(1);
+				int ch2 = b.codePointAt(2);
+				int ch3 = b.codePointAt(3);
+				return ch0 == '/' && ch1 == '%' && ch2 == '2' && (ch3 == 'e' || ch3 == 'E');
+			}
+			default -> {
+				return false;
+			}
 		}
 	}
 
 	/**
-	 * A double-dot URL path segment is a URL path segment that is "/.." or an ASCII case-insensitive match for "/.%2e", "/%2e.", or "/%2e%2e".
+	 * A double-dot URL path segment is a URL path segment that is "[/].." or an ASCII case-insensitive match for "/.%2e", "/%2e.", or "/%2e%2e".
 	 */
 	private static boolean isDoubleDotPathSegment(StringBuilder b) {
 		int len = b.length();
-		if (len == 3) {
-			char ch0 = b.charAt(0);
-			char ch1 = b.charAt(1);
-			char ch2 = b.charAt(2);
-			return ch0 == '/' && ch1 == '.' && ch2 == '.';
-		}
-		else if (len == 5) {
-			char ch0 = b.charAt(0);
-			char ch1 = b.charAt(1);
-			char ch2 = b.charAt(2);
-			char ch3 = b.charAt(3);
-			char ch4 = b.charAt(4);
-			// case-insensitive match for "/.%2e" or "/%2e."
-			return ch0 == '/' &&
-					(ch1 == '.' && ch2 == '%' && ch3 == '2' && (ch4 == 'e' || ch4 == 'E')
-							|| (ch1 == '%' && ch2 == '2' && (ch3 == 'e' || ch3 == 'E') && ch4 == '.'));
-		}
-		else if (len == 7) {
-			char ch0 = b.charAt(0);
-			char ch1 = b.charAt(1);
-			char ch2 = b.charAt(2);
-			char ch3 = b.charAt(3);
-			char ch4 = b.charAt(4);
-			char ch5 = b.charAt(5);
-			char ch6 = b.charAt(6);
-			// case-insensitive match for "/%2e%2e".
-			return ch0 == '/' && ch1 == '%' && ch2 == '2' && (ch3 == 'e' || ch3 == 'E')
-					&& ch4 == '%' && ch5 == '2' && (ch6 == 'e' || ch6 == 'E');
-		}
-		else {
-			return false;
+		switch (len) {
+			case 2 -> {
+				int ch0 = b.codePointAt(0);
+				int ch1 = b.codePointAt(1);
+				return ch0 == '.' && ch1 == '.';
+			}
+			case 3 -> {
+				int ch0 = b.codePointAt(0);
+				int ch1 = b.codePointAt(1);
+				int ch2 = b.codePointAt(2);
+				return ch0 == '/' && ch1 == '.' && ch2 == '.';
+			}
+			case 4 -> {
+				int ch0 = b.codePointAt(0);
+				int ch1 = b.codePointAt(1);
+				int ch2 = b.codePointAt(2);
+				int ch3 = b.codePointAt(3);
+				// case-insensitive match for ".%2e" or "%2e."
+				return (ch0 == '.' && ch1 == '%' && ch2 == '2' && (ch3 == 'e' || ch3 == 'E') ||
+						(ch0 == '%' && ch1 == '2' && (ch2 == 'e' || ch2 == 'E') && ch3 == '.'));
+			}
+			case 5 -> {
+				int ch0 = b.codePointAt(0);
+				int ch1 = b.codePointAt(1);
+				int ch2 = b.codePointAt(2);
+				int ch3 = b.codePointAt(3);
+				int ch4 = b.codePointAt(4);
+				// case-insensitive match for "/.%2e" or "/%2e."
+				return ch0 == '/' &&
+						(ch1 == '.' && ch2 == '%' && ch3 == '2' && (ch4 == 'e' || ch4 == 'E')
+								|| (ch1 == '%' && ch2 == '2' && (ch3 == 'e' || ch3 == 'E') && ch4 == '.'));
+			}
+			case 6 -> {
+				int ch0 = b.codePointAt(0);
+				int ch1 = b.codePointAt(1);
+				int ch2 = b.codePointAt(2);
+				int ch3 = b.codePointAt(3);
+				int ch4 = b.codePointAt(4);
+				int ch5 = b.codePointAt(5);
+				// case-insensitive match for "%2e%2e".
+				return ch0 == '%' && ch1 == '2' && (ch2 == 'e' || ch2 == 'E')
+						&& ch3 == '%' && ch4 == '2' && (ch5 == 'e' || ch5 == 'E');
+			}
+			case 7 -> {
+				int ch0 = b.codePointAt(0);
+				int ch1 = b.codePointAt(1);
+				int ch2 = b.codePointAt(2);
+				int ch3 = b.codePointAt(3);
+				int ch4 = b.codePointAt(4);
+				int ch5 = b.codePointAt(5);
+				int ch6 = b.codePointAt(6);
+				// case-insensitive match for "/%2e%2e".
+				return ch0 == '/' && ch1 == '%' && ch2 == '2' && (ch3 == 'e' || ch3 == 'E')
+						&& ch4 == '%' && ch5 == '2' && (ch6 == 'e' || ch6 == 'E');
+			}
+			default -> {
+				return false;
+			}
 		}
 	}
 
@@ -493,7 +686,7 @@ final class UrlParser {
 	 * its first two code points are a Windows drive letter
 	 * its length is 2 or its third code point is U+002F (/), U+005C (\), U+003F (?), or U+0023 (#).
 	 */
-	private static boolean startsWithWindowsDriveLetter(CharSequence input) {
+	private static boolean startsWithWindowsDriveLetter(String input) {
 		int len = input.length();
 		if (len < 2) {
 			return false;
@@ -505,24 +698,36 @@ final class UrlParser {
 			return true;
 		}
 		else {
-			char ch2 = input.charAt(2);
+			int ch2 = input.codePointAt(2);
 			return ch2 == '/' || ch2 == '\\' || ch2 == '?' || ch2 == '#';
 		}
 	}
 
 	private static boolean isWindowsDriveLetterInternal(CharSequence s, boolean normalized) {
-		char ch0 = s.charAt(0);
+		int ch0 = codePointAt(s, 0);
 		if (!isAsciiAlpha(ch0)) {
 			return false;
 		}
 		else {
-			char ch1 = s.charAt(1);
+			int ch1 = codePointAt(s, 1);
 			if (normalized) {
 				return ch1 == ':';
 			}
 			else {
 				return ch1 == ':' || ch1 == '|';
 			}
+		}
+	}
+
+	private static int codePointAt(CharSequence s, int index) {
+		if (s instanceof String string) {
+			return string.codePointAt(index);
+		}
+		else if (s instanceof StringBuilder builder) {
+			return builder.codePointAt(index);
+		}
+		else {
+			throw new IllegalStateException();
 		}
 	}
 
@@ -656,8 +861,8 @@ final class UrlParser {
 				// If base is null, or base has an opaque path and c is not U+0023 (#), missing-scheme-non-relative-URL
 				// validation error, return failure.
 				if (p.base == null || p.base.path().isOpaque() && c != '#') {
-					p.failure("The input is missing a scheme, because it does not begin with an ASCII alpha \"" + Character.toString(c) +
-							"\", and no base URL was provided.");
+					p.failure("The input is missing a scheme, because it does not begin with an ASCII alpha \"" +
+							(c != EOF ? Character.toString(c) : "") + "\", and no base URL was provided.");
 				}
 				// Otherwise, if base has an opaque path and c is U+0023 (#), set url’s scheme to base’s scheme, url’s
 				// path to base’s path, url’s query to base’s query, url’s fragment to the empty string, and set state to fragment state.
@@ -665,7 +870,7 @@ final class UrlParser {
 					url.scheme = p.base.scheme();
 					url.path = p.base.path();
 					url.query = p.base.query;
-					url.fragment = "";
+					url.fragment = new StringBuilder();
 					p.setState(FRAGMENT);
 				}
 				// Otherwise, if base’s scheme is not "file", set state to relative state and decrease pointer by 1.
@@ -738,20 +943,20 @@ final class UrlParser {
 				else {
 					// Set url’s username to base’s username, url’s password to base’s password, url’s host to base’s host,
 					// url’s port to base’s port, url’s path to a clone of base’s path, and url’s query to base’s query.
-					url.username = p.base.username();
-					url.password = p.base.password();
+					url.username = (p.base.username != null) ? new StringBuilder(p.base.username) : null;
+					url.password = (p.base.password != null) ? new StringBuilder(p.base.password) : null;
 					url.host = p.base.host();
 					url.port = p.base.port();
 					url.path = p.base.path().clone();
 					url.query = p.base.query;
 					// If c is U+003F (?), then set url’s query to the empty string, and state to query state.
 					if (c == '?') {
-						url.query = "";
+						url.query = new StringBuilder();
 						p.setState(QUERY);
 					}
 					// Otherwise, if c is U+0023 (#), set url’s fragment to the empty string and state to fragment state.
 					else if (c == '#') {
-						url.fragment = "";
+						url.fragment = new StringBuilder();
 						p.setState(FRAGMENT);
 					}
 					// Otherwise, if c is not the EOF code point:
@@ -789,8 +994,8 @@ final class UrlParser {
 				// to base’s host, url’s port to base’s port, state to path state, and then, decrease pointer by 1.
 				else {
 					Assert.state(p.base != null, "No base URL available");
-					url.username = p.base.username();
-					url.password = p.base.password();
+					url.username = (p.base.username != null) ? new StringBuilder(p.base.username) : null;
+					url.password = (p.base.password != null) ? new StringBuilder(p.base.password) : null;
 					url.host = p.base.host();
 					url.port = p.base.port();
 					p.setState(PATH);
@@ -850,9 +1055,6 @@ final class UrlParser {
 					p.atSignSeen = true;
 
 					int bufferLen = p.buffer.length();
-					StringBuilder username = new StringBuilder(bufferLen);
-					StringBuilder password = new StringBuilder(bufferLen);
-
 					// For each codePoint in buffer:
 					for (int i = 0; i < bufferLen; i++) {
 						int codePoint = p.buffer.codePointAt(i);
@@ -862,18 +1064,26 @@ final class UrlParser {
 							continue;
 						}
 						// Let encodedCodePoints be the result of running UTF-8 percent-encode codePoint using the userinfo percent-encode set.
-						String encodedCodePoints = p.percentEncode(codePoint,HierarchicalUriComponents.Type.USER_INFO);
+						String encodedCodePoints = p.percentEncode(codePoint, UrlParser::userinfoPercentEncodeSet);
 						// If passwordTokenSeen is true, then append encodedCodePoints to url’s password.
 						if (p.passwordTokenSeen) {
-							password.append(encodedCodePoints);
+							if (encodedCodePoints != null) {
+								url.appendToPassword(encodedCodePoints);
+							}
+							else {
+								url.appendToPassword(codePoint);
+							}
 						}
 						// Otherwise, append encodedCodePoints to url’s username.
 						else {
-							username.append(encodedCodePoints);
+							if (encodedCodePoints != null) {
+								url.appendToUsername(encodedCodePoints);
+							}
+							else {
+								url.appendToUsername(codePoint);
+							}
 						}
 					}
-					url.username = username.toString();
-					url.password = password.toString();
 					// Set buffer to the empty string.
 					p.emptyBuffer();
 				}
@@ -917,7 +1127,7 @@ final class UrlParser {
 						return;
 					}
 					// Let host be the result of host parsing buffer with url is not special.
-					Host host = Host.parse(p.buffer.toString(), false, p.validationErrorHandler);
+					Host host = Host.parse(p.buffer.toString(), !url.isSpecial(), p);
 					// Set url’s host to host, buffer to the empty string, and state to port state.
 					url.host = host;
 					p.emptyBuffer();
@@ -943,7 +1153,7 @@ final class UrlParser {
 					// EXTRA: if buffer is not empty
 					if (!p.buffer.isEmpty()) {
 						// Let host be the result of host parsing buffer with url is not special.
-						Host host = Host.parse(p.buffer.toString(), false, p.validationErrorHandler);
+						Host host = Host.parse(p.buffer.toString(), !url.isSpecial(), p);
 						// Set url’s host to host, buffer to the empty string, and state to path start state.
 						url.host = host;
 					}
@@ -1005,7 +1215,7 @@ final class UrlParser {
 								}
 								int defaultPort = defaultPort(url.scheme);
 								// Set url’s port to null, if port is url’s scheme’s default port; otherwise to port.
-								if (defaultPort == -1 || port == defaultPort) {
+								if (defaultPort != -1 && port == defaultPort) {
 									url.port = null;
 								}
 								else {
@@ -1062,12 +1272,12 @@ final class UrlParser {
 					url.query = p.base.query;
 					// If c is U+003F (?), then set url’s query to the empty string and state to query state.
 					if (c == '?') {
-						url.query = "";
+						url.query = new StringBuilder();
 						p.setState(QUERY);
 					}
 					// Otherwise, if c is U+0023 (#), set url’s fragment to the empty string and state to fragment state.
 					else if (c == '#') {
-						url.fragment = "";
+						url.fragment = new StringBuilder();
 						p.setState(FRAGMENT);
 					}
 					// Otherwise, if c is not the EOF code point:
@@ -1160,7 +1370,7 @@ final class UrlParser {
 					// Otherwise, run these steps:
 					else {
 						// Let host be the result of host parsing buffer with url is not special.
-						Host host = Host.parse(p.buffer.toString(), false, p.validationErrorHandler);
+						Host host = Host.parse(p.buffer.toString(), !url.isSpecial(), p);
 						// If host is "localhost", then set host to the empty string.
 						if (host instanceof Domain domain && domain.domain().equals("localhost")) {
 							host = EmptyHost.INSTANCE;
@@ -1204,12 +1414,12 @@ final class UrlParser {
 				}
 				// Otherwise, if state override is not given and if c is U+003F (?), set url’s query to the empty string and state to query state.
 				else if (p.stateOverride == null && c == '?') {
-					url.query = "";
+					url.query = new StringBuilder();
 					p.setState(QUERY);
 				}
 				// Otherwise, if state override is not given and if c is U+0023 (#), set url’s fragment to the empty string and state to fragment state.
 				else if (p.stateOverride == null && c =='#') {
-					url.fragment = "";
+					url.fragment = new StringBuilder();
 					p.setState(FRAGMENT);
 				}
 				// Otherwise, if c is not the EOF code point:
@@ -1278,12 +1488,12 @@ final class UrlParser {
 					}
 					// If c is U+003F (?), then set url’s query to the empty string and state to query state.
 					if (c == '?') {
-						url.query = "";
+						url.query = new StringBuilder();
 						p.setState(QUERY);
 					}
 					// If c is U+0023 (#), then set url’s fragment to the empty string and state to fragment state.
 					if (c == '#') {
-						url.fragment = "";
+						url.fragment = new StringBuilder();
 						p.setState(FRAGMENT);
 					}
 				}
@@ -1302,14 +1512,19 @@ final class UrlParser {
 						// If c is U+0025 (%) and remaining does not start with two ASCII hex digits, invalid-URL-unit validation error.
 						else if (c == '%' &&
 								(p.pointer >= p.input.length() - 2 ||
-										!isAsciiHexDigit(p.input.charAt(p.pointer + 1)) ||
-										!isAsciiHexDigit(p.input.charAt(p.pointer + 2)))) {
+										!isAsciiHexDigit(p.input.codePointAt(p.pointer + 1)) ||
+										!isAsciiHexDigit(p.input.codePointAt(p.pointer + 2)))) {
 							p.validationError("Invalid URL Unit: \"" + (char) c + "\"");
 						}
 					}
 					// UTF-8 percent-encode c using the path percent-encode set and append the result to buffer.
-					String encoded = p.percentEncode(c, HierarchicalUriComponents.Type.PATH_SEGMENT);
-					p.buffer.append(encoded);
+					String encoded = p.percentEncode(c, UrlParser::pathPercentEncodeSet);
+					if (encoded != null) {
+						p.append(encoded);
+					}
+					else {
+						p.append(c);
+					}
 				}
 			}
 		},
@@ -1323,12 +1538,12 @@ final class UrlParser {
 				}
 				// If c is U+003F (?), then set url’s query to the empty string and state to query state.
 				if (c == '?') {
-					url.query = "";
+					url.query = new StringBuilder();
 					p.setState(QUERY);
 				}
 				// Otherwise, if c is U+0023 (#), then set url’s fragment to the empty string and state to fragment state.
 				else if (c == '#') {
-					url.fragment = "";
+					url.fragment = new StringBuilder();
 					p.setState(FRAGMENT);
 				}
 				// EXTRA: Otherwise, if c is '{', then append c to buffer, set state to url template state.
@@ -1346,15 +1561,20 @@ final class UrlParser {
 						// If c is U+0025 (%) and remaining does not start with two ASCII hex digits, invalid-URL-unit validation error.
 						else if (c == '%' &&
 								(p.pointer >= p.input.length() - 2 ||
-										!isAsciiHexDigit(p.input.charAt(p.pointer + 1)) ||
-										!isAsciiHexDigit(p.input.charAt(p.pointer + 2)))) {
+										!isAsciiHexDigit(p.input.codePointAt(p.pointer + 1)) ||
+										!isAsciiHexDigit(p.input.codePointAt(p.pointer + 2)))) {
 							p.validationError("Invalid URL Unit: \"" + (char) c + "\"");
 						}
 					}
 					// If c is not the EOF code point, UTF-8 percent-encode c using the C0 control percent-encode set and append the result to url’s path.
 					if (c != EOF) {
-						String encoded = p.percentEncode(c, HierarchicalUriComponents.Type.C0);
-						url.path.append(encoded);
+						String encoded = p.percentEncode(c, UrlParser::c0ControlPercentEncodeSet);
+						if (encoded != null) {
+							url.path.append(encoded);
+						}
+						else {
+							url.path.append(c);
+						}
 					}
 				}
 			}
@@ -1376,15 +1596,16 @@ final class UrlParser {
 				// - c is the EOF code point
 				if ( (p.stateOverride == null && c == '#') || c == EOF) {
 					// Let queryPercentEncodeSet be the special-query percent-encode set if url is special; otherwise the query percent-encode set.
+					IntPredicate queryPercentEncodeSet = url.isSpecial() ? UrlParser::specialQueryPercentEncodeSet : UrlParser::queryPercentEncodeSet;
 					// Percent-encode after encoding, with encoding, buffer, and queryPercentEncodeSet, and append the result to url’s query.
-					String encoded = p.percentEncode(p.buffer.toString(), HierarchicalUriComponents.Type.QUERY);
+					String encoded = p.percentEncode(p.buffer.toString(), queryPercentEncodeSet);
 					Assert.state(url.query != null, "Url's query should not be null");
-					url.query += encoded;
+					url.query.append(encoded);
 					// Set buffer to the empty string.
 					p.emptyBuffer();
 					// If c is U+0023 (#), then set url’s fragment to the empty string and state to fragment state.
 					if (c == '#') {
-						url.fragment = "";
+						url.fragment = new StringBuilder();
 						p.setState(FRAGMENT);
 					}
 				}
@@ -1403,8 +1624,8 @@ final class UrlParser {
 						// If c is U+0025 (%) and remaining does not start with two ASCII hex digits, invalid-URL-unit validation error.
 						else if (c == '%' &&
 								(p.pointer >= p.input.length() - 2 ||
-										!isAsciiHexDigit(p.input.charAt(p.pointer + 1)) ||
-										!isAsciiHexDigit(p.input.charAt(p.pointer + 2)))) {
+										!isAsciiHexDigit(p.input.codePointAt(p.pointer + 1)) ||
+										!isAsciiHexDigit(p.input.codePointAt(p.pointer + 2)))) {
 							p.validationError("Invalid URL Unit: \"" + (char) c + "\"");
 						}
 					}
@@ -1426,15 +1647,20 @@ final class UrlParser {
 						// If c is U+0025 (%) and remaining does not start with two ASCII hex digits, invalid-URL-unit validation error.
 						else if (c == '%' &&
 								(p.pointer >= p.input.length() - 2 ||
-										!isAsciiHexDigit(p.input.charAt(p.pointer + 1)) ||
-										!isAsciiHexDigit(p.input.charAt(p.pointer + 2)))) {
+										!isAsciiHexDigit(p.input.codePointAt(p.pointer + 1)) ||
+										!isAsciiHexDigit(p.input.codePointAt(p.pointer + 2)))) {
 							p.validationError("Invalid URL Unit: \"" + (char) c + "\"");
 						}
 					}
 					// UTF-8 percent-encode c using the fragment percent-encode set and append the result to url’s fragment.
-					String encoded = p.percentEncode(c, HierarchicalUriComponents.Type.FRAGMENT);
+					String encoded = p.percentEncode(c, UrlParser::fragmentPercentEncodeSet);
 					Assert.state(url.fragment != null, "Url's fragment should not be null");
-					url.fragment += encoded;
+					if (encoded != null) {
+						url.fragment.append(encoded);
+					}
+					else {
+						url.fragment.appendCodePoint(c);
+					}
 				}
 			}
 		},
@@ -1472,9 +1698,11 @@ final class UrlParser {
 
 		private String scheme = "";
 
-		private String username = "";
+		@Nullable
+		private StringBuilder username = null;
 
-		private String password = "";
+		@Nullable
+		private StringBuilder password = null;
 
 		@Nullable
 		private Host host = null;
@@ -1485,10 +1713,10 @@ final class UrlParser {
 		private Path path = new PathSegments();
 
 		@Nullable
-		private String query = null;
+		private StringBuilder query = null;
 
 		@Nullable
-		private String fragment = null;
+		private StringBuilder fragment = null;
 
 		public UrlRecord() {
 		}
@@ -1506,7 +1734,7 @@ final class UrlParser {
 		 * A URL includes credentials if its username or password is not the empty string.
 		 */
 		public boolean includesCredentials() {
-			return !this.username.isEmpty() || !this.password.isEmpty();
+			return this.username != null && !this.username.isEmpty() || this.password != null && !this.password.isEmpty();
 		}
 
 		/**
@@ -1518,6 +1746,33 @@ final class UrlParser {
 
 
 		/**
+		 * The serialization of an origin is the string obtained by applying the following algorithm to the given origin origin:
+		 * If origin is an opaque origin, then return "null".
+		 * Otherwise, let result be origin's scheme.
+		 * Append "://" to result.
+		 * Append origin's host, serialized, to result.
+		 * If origin's port is non-null, append a U+003A COLON character (:), and origin's port, serialized, to result.
+		 * Return result.
+		 */
+		public String origin() {
+			String scheme = scheme();
+			if (scheme.equals("ftp") || scheme.equals("http") || scheme.equals("https") || scheme.equals("ws") || scheme.equals("wss")) {
+				StringBuilder builder = new StringBuilder(scheme);
+				builder.append("://");
+				builder.append(host());
+				Port port = port();
+				if (port != null) {
+					builder.append(':');
+					builder.append(port);
+				}
+				return builder.toString();
+			}
+			else {
+				return "null";
+			}
+		}
+
+		/**
 		 * A URL’s scheme is an ASCII string that identifies the type of URL and can be used to dispatch a URL for
 		 * further processing after parsing. It is initially the empty string.
 		 */
@@ -1526,17 +1781,66 @@ final class UrlParser {
 		}
 
 		/**
+		 * The protocol getter steps are to return this’s URL’s scheme, followed by U+003A (:).
+		 */
+		public String protocol() {
+			return scheme() + ":";
+		}
+
+		/**
 		 * A URL’s username is an ASCII string identifying a username. It is initially the empty string.
 		 */
 		public String username() {
-			return this.username;
+			if (this.username != null) {
+				return this.username.toString();
+			}
+			else {
+				return "";
+			}
+		}
+
+		void appendToUsername(int codePoint) {
+			if (this.username == null) {
+				this.username = new StringBuilder(2);
+			}
+			this.username.appendCodePoint(codePoint);
+		}
+
+		public void appendToUsername(String s) {
+			if (this.username == null) {
+				this.username = new StringBuilder(s);
+			}
+			else {
+				this.username.append(s);
+			}
 		}
 
 		/**
 		 * A URL’s password is an ASCII string identifying a password. It is initially the empty string.
 		 */
 		public String password() {
-			return this.password;
+			if (this.password != null) {
+				return this.password.toString();
+			}
+			else {
+				return "";
+			}
+		}
+
+		void appendToPassword(int codePoint) {
+			if (this.password == null) {
+				this.password = new StringBuilder(2);
+			}
+			this.password.appendCodePoint(codePoint);
+		}
+
+		void appendToPassword(String s) {
+			if (this.password == null) {
+				this.password = new StringBuilder(s);
+			}
+			else {
+				this.password.append(s);
+			}
 		}
 
 		/**
@@ -1548,6 +1852,36 @@ final class UrlParser {
 		}
 
 		/**
+		 *The host getter steps are:
+		 * Let url be this’s URL.
+		 * If url’s host is null, then return the empty string.
+		 * If url’s port is null, return url’s host, serialized.
+		 * Return url’s host, serialized, followed by U+003A (:) and url’s port, serialized.
+		 */
+		public String hostString() {
+			if (host() == null) {
+				return "";
+			}
+			StringBuilder builder = new StringBuilder(hostname());
+			Port port = port();
+			if (port != null) {
+				builder.append(':');
+				builder.append(port);
+			}
+			return builder.toString();
+		}
+
+		public String hostname() {
+			Host host = host();
+			if (host == null) {
+				return "";
+			}
+			else {
+				return host.toString();
+			}
+		}
+
+		/**
 		 * A URL’s port is either null, a string representing a 16-bit unsigned integer  that identifies a networking
 		 * port, or a string containing a uri template . It is initially {@code null}.
 		 */
@@ -1556,11 +1890,24 @@ final class UrlParser {
 			return this.port;
 		}
 
+		public String portString() {
+			if (port() == null) {
+				return "";
+			}
+			else {
+				return port().toString();
+			}
+		}
+
 		/**
 		 * A URL’s path is a URL {@linkplain Path path}, usually identifying a location. It is initially {@code « »}.
 		 */
 		public Path path() {
 			return this.path;
+		}
+
+		public String pathname() {
+			return path().name();
 		}
 
 		/**
@@ -1582,7 +1929,27 @@ final class UrlParser {
 		 */
 		@Nullable
 		public String query() {
-			return this.query;
+			if (this.query == null) {
+				return null;
+			}
+			else {
+				return this.query.toString();
+			}
+		}
+
+		/**
+		 * The search getter steps are:
+		 * If this’s URL’s query is either null or the empty string, then return the empty string.
+		 * Return U+003F (?), followed by this’s URL’s query.
+		 */
+		public String search() {
+			String query = query();
+			if (query == null) {
+				return "";
+			}
+			else {
+				return "?" + query;
+			}
 		}
 
 		/**
@@ -1591,7 +1958,83 @@ final class UrlParser {
 		 */
 		@Nullable
 		public String fragment() {
-			return this.fragment;
+			if (this.fragment == null) {
+				return null;
+			}
+			else {
+				return this.fragment.toString();
+			}
+		}
+
+		/**
+		 * The hash getter steps are:
+		 * If this’s URL’s fragment is either null or the empty string, then return the empty string.
+		 * Return U+0023 (#), followed by this’s URL’s fragment.
+		 */
+		public String hash() {
+			String fragment = fragment();
+			if (fragment == null || fragment.isEmpty()) {
+				return "";
+			}
+			else {
+				return "#" + fragment;
+			}
+		}
+
+		public String href() {
+			// Let output be url’s scheme and U+003A (:) concatenated.
+			StringBuilder output = new StringBuilder(scheme());
+			output.append(':');
+			Host host = host();
+			// If url’s host is non-null:
+			if (host != null) {
+				// Append "//" to output.
+				output.append("//");
+				// If url includes credentials, then:
+				if (includesCredentials()) {
+					// Append url’s username to output.
+					output.append(username());
+					String password = password();
+					// If url’s password is not the empty string, then append U+003A (:), followed by url’s password, to output.
+					if (!password.isEmpty()) {
+						output.append(':');
+						output.append(password);
+					}
+					// Append U+0040 (@) to output.
+					output.append('@');
+				}
+				// Append url’s host, serialized, to output.
+				output.append(hostname());
+				Port port = port();
+				// If url’s port is non-null, append U+003A (:) followed by url’s port, serialized, to output.
+				if (port != null) {
+					output.append(':');
+					output.append(port());
+				}
+			}
+			// If url’s host is null, url does not have an opaque path, url’s path’s size is greater than 1, and url’s path[0] is the empty string, then append U+002F (/) followed by U+002E (.) to output.
+			else if (!hasOpaquePath() &&
+					path() instanceof PathSegments pathSegments &&
+					pathSegments.size() > 1 &&
+					pathSegments.get(0).isEmpty()) {
+				output.append("/.");
+			}
+			// Append the result of URL path serializing url to output.
+			output.append(pathname());
+			// If url’s query is non-null, append U+003F (?), followed by url’s query, to output.
+			String query = query();
+			if (query != null) {
+				output.append('?');
+				output.append(query);
+			}
+			// If exclude fragment is false and url’s fragment is non-null, then append U+0023 (#), followed by url’s fragment, to output.
+			String fragment = fragment();
+			if (fragment != null) {
+				output.append('#');
+				output.append(fragment);
+			}
+			// Return output.
+			return output.toString();
 		}
 
 		@Override
@@ -1602,15 +2045,15 @@ final class UrlParser {
 			if (obj == null || obj.getClass() != this.getClass()) {
 				return false;
 			}
-			var that = (UrlRecord) obj;
-			return Objects.equals(this.scheme, that.scheme) &&
-					Objects.equals(this.username, that.username) &&
-					Objects.equals(this.password, that.password) &&
-					Objects.equals(this.host, that.host) &&
-					Objects.equals(this.port, that.port) &&
-					Objects.equals(this.path, that.path) &&
-					Objects.equals(this.query, that.query) &&
-					Objects.equals(this.fragment, that.fragment);
+			UrlRecord that = (UrlRecord) obj;
+			return Objects.equals(this.scheme(), that.scheme()) &&
+					Objects.equals(this.username(), that.username()) &&
+					Objects.equals(this.password(), that.password()) &&
+					Objects.equals(this.host(), that.host()) &&
+					Objects.equals(this.port(), that.port()) &&
+					Objects.equals(this.path(), that.path()) &&
+					Objects.equals(this.query(), that.query()) &&
+					Objects.equals(this.fragment(), that.fragment());
 		}
 
 		@Override
@@ -1646,12 +2089,12 @@ final class UrlParser {
 		 * The host parser takes a scalar value string input with an optional
 		 * boolean isOpaque (default false), and then runs these steps. They return failure or a host.
 		 */
-		static Host parse(String input, boolean isOpaque, @Nullable Consumer<String> validationErrorHandler) {
+		static Host parse(String input, boolean isOpaque, UrlParser p) {
 			// If input starts with U+005B ([), then:
-			if (!input.isEmpty() && input.charAt(0) == '[') {
+			if (!input.isEmpty() && input.codePointAt(0) == '[') {
 				int last = input.length() - 1;
 				// If input does not end with U+005D (]), IPv6-unclosed validation error, return failure.
-				if (input.charAt(last) != ']') {
+				if (input.codePointAt(last) != ']') {
 					throw new InvalidUrlException("IPv6 address is missing the closing \"]\").");
 				}
 				// Return the result of IPv6 parsing input with its leading U+005B ([) and trailing U+005D (]) removed.
@@ -1660,18 +2103,18 @@ final class UrlParser {
 			}
 			// If isOpaque is true, then return the result of opaque-host parsing input.
 			if (isOpaque) {
-				return OpaqueHost.parse(input);
+				return OpaqueHost.parse(input, p);
 			}
 			// Assert: input is not the empty string.
 			Assert.state(!input.isEmpty(), "Input should not be empty");
 
 			// Let domain be the result of running UTF-8 decode without BOM on the percent-decoding of input.
-			String domain = UriUtils.decode(input, StandardCharsets.UTF_8);
+			String domain = percentDecode(input);
 			// Let asciiDomain be the result of running domain to ASCII with domain and false.
 			String asciiDomain = domainToAscii(domain, false);
 
 			for (int i=0; i < asciiDomain.length(); i++) {
-				char ch = asciiDomain.charAt(i);
+				int ch = asciiDomain.codePointAt(i);
 				// If asciiDomain contains a forbidden domain code point, domain-invalid-code-point validation error, return failure.
 				if (isForbiddenDomain(ch)) {
 					throw new InvalidUrlException("Invalid character \"" + ch + "\" in domain \"" + input + "\"");
@@ -1679,7 +2122,7 @@ final class UrlParser {
 			}
 			// If asciiDomain ends in a number, then return the result of IPv4 parsing asciiDomain.
 			if (endsInNumber(asciiDomain)) {
-				Ipv4Address address = Ipv4Address.parse(asciiDomain, validationErrorHandler);
+				Ipv4Address address = Ipv4Address.parse(asciiDomain, p);
 				return new IpAddressHost(address);
 			}
 			// Return asciiDomain.
@@ -1690,36 +2133,29 @@ final class UrlParser {
 
 		private static boolean endsInNumber(String input) {
 			// Let parts be the result of strictly splitting input on U+002E (.).
-			List<String> parts = tokenize(input, ".");
-			int lastIdx = parts.size() - 1;
+			LinkedList<String> parts = strictSplit(input, '.');
+			if (parts.isEmpty()) {
+				return false;
+			}
 			// If the last item in parts is the empty string, then:
-			if (parts.get(lastIdx).isEmpty()) {
+			if (parts.getLast().isEmpty()) {
 				// If parts’s size is 1, then return false.
 				if (parts.size() == 1) {
 					return false;
 				}
 				// Remove the last item from parts.
-				parts.remove(lastIdx);
+				parts.removeLast();
 			}
 			// Let last be the last item in parts.
-			String last = parts.get(parts.size() - 1);
+			String last = parts.getLast();
 			// If last is non-empty and contains only ASCII digits, then return true.
 			if (!last.isEmpty() && containsOnlyAsciiDigits(last)) {
 				return true;
 			}
 			// If parsing last as an IPv4 number does not return failure, then return true.
-			try {
-				Ipv4Address.parseIpv4Number(last);
-				return true;
-			}
-			catch (InvalidUrlException ignored) {
-			}
-			// Return false.
-			return false;
+			ParseIpv4NumberResult result = Ipv4Address.parseIpv4Number(last);
+			return result != ParseIpv4NumberFailure.INSTANCE;
 		}
-
-
-
 	}
 
 	/**
@@ -1807,11 +2243,62 @@ final class UrlParser {
 		}
 	}
 
-	record OpaqueHost(String domain) implements Host {
+	static final class OpaqueHost implements Host {
 
-		public static OpaqueHost parse(String input) {
-			throw new UnsupportedOperationException("Not implemented yet");
+		private final String host;
+
+		private OpaqueHost(String host) {
+			this.host = host;
 		}
+
+		/**
+		 * The opaque-host parser takes a scalar value string input, and then runs these steps. They return failure or
+		 * an opaque host.
+		 */
+		public static OpaqueHost parse(String input, UrlParser p) {
+			for (int i = 0; i < input.length(); i++) {
+				int ch = input.codePointAt(i);
+				// If input contains a forbidden host code point, host-invalid-code-point validation error, return failure.
+				if (isForbiddenHost(ch)) {
+					throw new InvalidUrlException("An opaque host contains a forbidden host code point.");
+				}
+				// If input contains a code point that is not a URL code point and not U+0025 (%), invalid-URL-unit validation error.
+				if (p.validate() && !isUrlCodePoint(ch) && ch != '%') {
+					p.validationError("Code point \"" + ch + "\" is not a URL unit.");
+				}
+				//If input contains a U+0025 (%) and the two code points following it are not ASCII hex digits, invalid-URL-unit validation error.
+				if (p.validate() && ch == '%' && (input.length() - i < 2 || !isAsciiDigit(input.codePointAt(i + 1)) || !isAsciiDigit(input.codePointAt(i + 2)))) {
+					p.validationError("Code point \"" + ch + "\" is not a URL unit.");
+				}
+			}
+			//Return the result of running UTF-8 percent-encode on input using the C0 control percent-encode set.
+			String encoded = p.percentEncode(input, UrlParser::c0ControlPercentEncodeSet);
+			return new OpaqueHost(encoded);
+		}
+
+		@Override
+		public boolean equals(Object obj) {
+			if (obj == this) {
+				return true;
+			}
+			else if (obj instanceof OpaqueHost other) {
+				return this.host.equals(other.host);
+			}
+			else {
+				return false;
+			}
+		}
+
+		@Override
+		public int hashCode() {
+			return this.host.hashCode();
+		}
+
+		@Override
+		public String toString() {
+			return this.host;
+		}
+
 	}
 
 	static final class EmptyHost implements Host {
@@ -1876,16 +2363,14 @@ final class UrlParser {
 			return output.toString();
 		}
 
-		public static Ipv4Address parse(String input, @Nullable Consumer<String> validationErrorHandler) {
+		public static Ipv4Address parse(String input, UrlParser p) {
 			// Let parts be the result of strictly splitting input on U+002E (.).
-			List<String> parts = tokenize(input, ".");
+			List<String> parts = strictSplit(input, '.');
 			int partsSize = parts.size();
 			// If the last item in parts is the empty string, then:
 			if (parts.get(partsSize - 1).isEmpty()) {
 				// IPv4-empty-part validation error.
-				if (validationErrorHandler != null) {
-					validationErrorHandler.accept("IPv4 address ends with \".\"");
-				}
+				p.validationError("IPv4 address ends with \".\"");
 				// If parts’s size is greater than 1, then remove the last item from parts.
 				if (partsSize > 1) {
 					parts.remove(partsSize - 1);
@@ -1903,17 +2388,24 @@ final class UrlParser {
 				String part = parts.get(i);
 				// Let result be the result of parsing part.
 				ParseIpv4NumberResult result = parseIpv4Number(part);
-				if (validationErrorHandler != null && result.validationError()) {
-					validationErrorHandler.accept("The IPv4 address contains numbers expressed using hexadecimal or octal digits.");
+				// If result is failure, IPv4-non-numeric-part validation error, return failure.
+				if (result == ParseIpv4NumberFailure.INSTANCE) {
+					p.failure("An IPv4 address part is not numeric.");
 				}
-				// Append result to numbers.
-				numbers.add(result.number());
+				else {
+					ParseIpv4NumberSuccess success = (ParseIpv4NumberSuccess) result;
+					if (p.validate() && success.validationError()) {
+						p.validationError("The IPv4 address contains numbers expressed using hexadecimal or octal digits.");
+					}
+					// Append result to numbers.
+					numbers.add(success.number());
+				}
 			}
 			for (Iterator<Integer> iterator = numbers.iterator(); iterator.hasNext(); ) {
 				Integer number = iterator.next();
 				// If any item in numbers is greater than 255, IPv4-out-of-range-part validation error.
-				if (validationErrorHandler != null && number > 255) {
-					validationErrorHandler.accept("An IPv4 address part exceeds 255.");
+				if (p.validate() && number > 255) {
+					p.validationError("An IPv4 address part exceeds 255.");
 				}
 				if (iterator.hasNext()) {
 					// If any but the last item in numbers is greater than 255, then return failure.
@@ -1953,7 +2445,7 @@ final class UrlParser {
 		private static ParseIpv4NumberResult parseIpv4Number(String input) {
 			// If input is the empty string, then return failure.
 			if (input.isEmpty()) {
-				throw new InvalidUrlException("Input is empty");
+				return ParseIpv4NumberFailure.INSTANCE;
 			}
 			// Let validationError be false.
 			boolean validationError = false;
@@ -1962,8 +2454,8 @@ final class UrlParser {
 			int len = input.length();
 			// If input contains at least two code points and the first two code points are either "0X" or "0x", then:
 			if (len >= 2) {
-				char ch0 = input.charAt(0);
-				char ch1 = input.charAt(1);
+				int ch0 = input.codePointAt(0);
+				int ch1 = input.codePointAt(1);
 				if (ch0 == '0' && (ch1 == 'X' || ch1 == 'x')) {
 					// Set validationError to true.
 					validationError = true;
@@ -1984,16 +2476,24 @@ final class UrlParser {
 			}
 			// If input is the empty string, then return (0, true).
 			if (input.isEmpty()) {
-				return new ParseIpv4NumberResult(0, true);
+				return new ParseIpv4NumberSuccess(0, true);
+			}
+			// If input contains a code point that is not a radix-R digit, then return failure.
+			for (int i = 0; i < input.length(); i++) {
+				int c = input.codePointAt(i);
+				int digit = Character.digit(c, r);
+				if (digit == -1) {
+					return ParseIpv4NumberFailure.INSTANCE;
+				}
 			}
 			try {
 				// Let output be the mathematical integer value that is represented by input in radix-R notation, using ASCII hex digits for digits with values 0 through 15.
 				int output = Integer.parseInt(input, r);
 				// Return (output, validationError).
-				return new ParseIpv4NumberResult(output, validationError);
+				return new ParseIpv4NumberSuccess(output, validationError);
 			}
 			catch (NumberFormatException ex) {
-				throw new InvalidUrlException("Could not parse \"" + input + "\" as integer: " + ex.getMessage(), ex);
+				return ParseIpv4NumberFailure.INSTANCE;
 			}
 		}
 
@@ -2047,11 +2547,11 @@ final class UrlParser {
 			// Let pointer be a pointer for input.
 			int pointer = 0;
 			int inputLength = input.length();
-			int c = (inputLength > 0) ? input.charAt(0) : EOF;
+			int c = (inputLength > 0) ? input.codePointAt(0) : EOF;
 			// If c is U+003A (:), then:
 			if (c == ':') {
 				// If remaining does not start with U+003A (:), IPv6-invalid-compression validation error, return failure.
-				if (inputLength > 1 && input.charAt(1) != ':') {
+				if (inputLength > 1 && input.codePointAt(1) != ':') {
 					throw new InvalidUrlException("IPv6 address begins with improper compression.");
 				}
 				// Increase pointer by 2.
@@ -2060,7 +2560,7 @@ final class UrlParser {
 				pieceIndex++;
 				compress = pieceIndex;
 			}
-			c = (pointer < inputLength) ? input.charAt(pointer) : EOF;
+			c = (pointer < inputLength) ? input.codePointAt(pointer) : EOF;
 			// While c is not the EOF code point:
 			while (c != EOF) {
 				// If pieceIndex is 8, IPv6-too-many-pieces validation error, return failure.
@@ -2077,7 +2577,7 @@ final class UrlParser {
 					pointer++;
 					pieceIndex++;
 					compress = pieceIndex;
-					c = (pointer < inputLength) ? input.charAt(pointer) : EOF;
+					c = (pointer < inputLength) ? input.codePointAt(pointer) : EOF;
 					continue;
 				}
 				// Let value and length be 0.
@@ -2089,7 +2589,7 @@ final class UrlParser {
 					value = (value * 0x10) + cHex;
 					pointer++;
 					length++;
-					c = (pointer < inputLength) ? input.charAt(pointer) : EOF;
+					c = (pointer < inputLength) ? input.codePointAt(pointer) : EOF;
 				}
 				// If c is U+002E (.), then:
 				if (c == '.') {
@@ -2105,7 +2605,7 @@ final class UrlParser {
 					}
 					// Let numbersSeen be 0.
 					int numbersSeen = 0;
-					c = (pointer < inputLength) ? input.charAt(pointer) : EOF;
+					c = (pointer < inputLength) ? input.codePointAt(pointer) : EOF;
 					// While c is not the EOF code point:
 					while (c != EOF) {
 						// Let ipv4Piece be null.
@@ -2115,7 +2615,7 @@ final class UrlParser {
 							// If c is a U+002E (.) and numbersSeen is less than 4, then increase pointer by 1.
 							if (c =='.' && numbersSeen < 4) {
 								pointer++;
-								c = (pointer < inputLength) ? input.charAt(pointer) : EOF;
+								c = (pointer < inputLength) ? input.codePointAt(pointer) : EOF;
 							}
 							// Otherwise, IPv4-in-IPv6-invalid-code-point validation error, return failure.
 							else {
@@ -2149,7 +2649,7 @@ final class UrlParser {
 							}
 							// Increase pointer by 1.
 							pointer++;
-							c = (pointer < inputLength) ? input.charAt(pointer) : EOF;
+							c = (pointer < inputLength) ? input.codePointAt(pointer) : EOF;
 						}
 						// Set address[pieceIndex] to address[pieceIndex] × 0x100 + ipv4Piece.
 						address[pieceIndex] = address[pieceIndex] * 0x100 + (ipv4Piece != null ? ipv4Piece : 0);
@@ -2159,7 +2659,7 @@ final class UrlParser {
 						if (numbersSeen == 2 || numbersSeen == 4) {
 							pieceIndex++;
 						}
-						c = (pointer < inputLength) ? input.charAt(pointer) : EOF;
+						c = (pointer < inputLength) ? input.codePointAt(pointer) : EOF;
 					}
 					// If numbersSeen is not 4, IPv4-in-IPv6-too-few-parts validation error, return failure.
 					if (numbersSeen != 4) {
@@ -2172,7 +2672,7 @@ final class UrlParser {
 				else if (c == ':') {
 					// Increase pointer by 1.
 					pointer++;
-					c = (pointer < inputLength) ? input.charAt(pointer) : EOF;
+					c = (pointer < inputLength) ? input.codePointAt(pointer) : EOF;
 					// If c is the EOF code point, IPv6-invalid-code-point validation error, return failure.
 					if (c == EOF) {
 						throw new InvalidUrlException("IPv6 address unexpectedly ends.");
@@ -2347,6 +2847,8 @@ final class UrlParser {
 
 	sealed interface Path permits PathSegment, PathSegments {
 
+		void append(int codePoint);
+
 		void append(String s);
 
 		boolean isEmpty();
@@ -2356,37 +2858,74 @@ final class UrlParser {
 		boolean isOpaque();
 
 		Path clone();
+
+		String name();
 	}
 
 	static final class PathSegment implements Path {
 
-		private final StringBuilder segment;
+		@Nullable
+		private StringBuilder builder = null;
 
 		@Nullable
-		String segmentString;
+		String segment;
 
 		PathSegment(String segment) {
-			this.segment = new StringBuilder(segment);
+			this.segment = segment;
+		}
+
+		PathSegment(int codePoint) {
+			append(codePoint);
 		}
 
 		public String segment() {
-			String result = this.segmentString;
+			String result = this.segment;
 			if (result == null) {
-				result = this.segment.toString();
-				this.segmentString = result;
+				Assert.state(this.builder != null, "String nor StringBuilder available");
+				result = this.builder.toString();
+				this.segment = result;
 			}
 			return result;
 		}
 
 		@Override
+		public void append(int codePoint) {
+			this.segment = null;
+			if (this.builder == null) {
+				this.builder = new StringBuilder(2);
+			}
+			this.builder.appendCodePoint(codePoint);
+		}
+
+		@Override
 		public void append(String s) {
-			this.segmentString = null;
-			this.segment.append(s);
+			this.segment = null;
+			if (this.builder == null) {
+				this.builder = new StringBuilder(s);
+			}
+			else {
+				this.builder.append(s);
+			}
+		}
+
+		@Override
+		public String name() {
+			String name = segment();
+			if (name.startsWith("/")) {
+				name = name.substring(1);
+			}
+			return name;
 		}
 
 		@Override
 		public boolean isEmpty() {
-			return this.segment.isEmpty();
+			if (this.segment != null) {
+				return this.segment.isEmpty();
+			}
+			else {
+				Assert.state(this.builder != null, "String nor StringBuilder available");
+				return this.builder.isEmpty();
+			}
 		}
 
 		@Override
@@ -2442,8 +2981,12 @@ final class UrlParser {
 
 
 		@Override
+		public void append(int codePoint) {
+			this.segments.add(new PathSegment(codePoint));
+		}
+
+		@Override
 		public void append(String segment) {
-			logger.debug("Adding \"" + segment + "\"");
 			this.segments.add(new PathSegment(segment));
 		}
 
@@ -2484,6 +3027,16 @@ final class UrlParser {
 		}
 
 		@Override
+		public String name() {
+			StringBuilder output = new StringBuilder();
+			for (PathSegment segment : this.segments) {
+				output.append('/');
+				output.append(segment.name());
+			}
+			return output.toString();
+		}
+
+		@Override
 		public boolean equals(Object o) {
 			if (o == this) {
 				return true;
@@ -2512,7 +3065,18 @@ final class UrlParser {
 
 	}
 
-	private record ParseIpv4NumberResult(int number, boolean validationError) {
+	private sealed interface ParseIpv4NumberResult permits ParseIpv4NumberFailure, ParseIpv4NumberSuccess {
+	}
+
+	private record ParseIpv4NumberSuccess(int number, boolean validationError) implements ParseIpv4NumberResult {
+	}
+
+	private static final class ParseIpv4NumberFailure implements ParseIpv4NumberResult {
+
+		public static final ParseIpv4NumberFailure INSTANCE = new ParseIpv4NumberFailure();
+
+		private ParseIpv4NumberFailure() {
+		}
 
 	}
 

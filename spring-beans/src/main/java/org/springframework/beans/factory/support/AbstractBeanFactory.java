@@ -321,7 +321,8 @@ public abstract class AbstractBeanFactory extends FactoryBeanRegistrySupport imp
 								// requested (indicated by required type), not for depends-on cascades.
 								throw new BeanCreationException(mbd.getResourceDescription(), beanName,
 										"Failed to initialize dependency '" + ex.getBeanName() + "' of " +
-												requiredType.getSimpleName() + " bean '" + beanName + "'", ex);
+												requiredType.getSimpleName() + " bean '" + beanName + "': " +
+												ex.getMessage(), ex);
 							}
 							throw ex;
 						}
@@ -1096,7 +1097,7 @@ public abstract class AbstractBeanFactory extends FactoryBeanRegistrySupport imp
 
 	@Override
 	public void setApplicationStartup(ApplicationStartup applicationStartup) {
-		Assert.notNull(applicationStartup, "applicationStartup must not be null");
+		Assert.notNull(applicationStartup, "ApplicationStartup must not be null");
 		this.applicationStartup = applicationStartup;
 	}
 

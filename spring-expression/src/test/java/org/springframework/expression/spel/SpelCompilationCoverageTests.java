@@ -32,14 +32,19 @@ import java.util.Set;
 import java.util.StringTokenizer;
 import java.util.stream.Stream;
 
+import example.Color;
+import example.FruitMap;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
 import org.springframework.asm.MethodVisitor;
 import org.springframework.expression.EvaluationContext;
 import org.springframework.expression.Expression;
+import org.springframework.expression.IndexAccessor;
 import org.springframework.expression.TypedValue;
 import org.springframework.expression.spel.ast.CompoundExpression;
 import org.springframework.expression.spel.ast.InlineList;
@@ -49,15 +54,21 @@ import org.springframework.expression.spel.ast.Ternary;
 import org.springframework.expression.spel.standard.SpelCompiler;
 import org.springframework.expression.spel.standard.SpelExpression;
 import org.springframework.expression.spel.standard.SpelExpressionParser;
+import org.springframework.expression.spel.support.ReflectiveIndexAccessor;
 import org.springframework.expression.spel.support.StandardEvaluationContext;
 import org.springframework.expression.spel.testdata.PersonInOtherPackage;
 import org.springframework.expression.spel.testresources.Person;
+import org.springframework.lang.Nullable;
+import org.springframework.util.ReflectionUtils;
 
 import static java.util.stream.Collectors.joining;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 import static org.assertj.core.api.Assertions.within;
 import static org.assertj.core.api.InstanceOfAssertFactories.BOOLEAN;
+import static org.junit.jupiter.api.Named.named;
+import static org.junit.jupiter.params.provider.Arguments.arguments;
+import static org.springframework.expression.spel.SpelMessage.EXCEPTION_DURING_INDEX_READ;
 import static org.springframework.expression.spel.standard.SpelExpressionTestUtils.assertIsCompiled;
 
 /**
@@ -119,6 +130,7 @@ import static org.springframework.expression.spel.standard.SpelExpressionTestUti
  * @author Sam Brannen
  * @since 4.1
  * @see org.springframework.expression.spel.standard.SpelCompilerTests
+ * @see org.springframework.expression.spel.support.ReflectiveIndexAccessorTests
  */
 public class SpelCompilationCoverageTests extends AbstractExpressionTests {
 
@@ -749,6 +761,213 @@ public class SpelCompilationCoverageTests extends AbstractExpressionTests {
 			return stream.map(Object::toString).collect(joining(" "));
 		}
 
+		@Nested
+		class IndexAccessorTests {
+
+			@Test
+			void indexWithPrimitiveIndexTypeAndReferenceValueTypeAccessedViaRoot() {
+				String exitTypeDescriptor = CodeFlow.toDescriptor(Color.class);
+				Colors colors = new Colors();
+
+				StandardEvaluationContext context = new StandardEvaluationContext();
+				context.addIndexAccessor(new ColorsIndexAccessor());
+
+				expression = parser.parseExpression("[0]");
+				assertCannotCompile(expression);
+
+				assertThatExceptionOfType(SpelEvaluationException.class)
+						.isThrownBy(() -> expression.getValue(context, colors))
+						.withMessageEndingWith("A problem occurred while attempting to read index '%s' in '%s'",
+								0, Colors.class.getName())
+						.withCauseInstanceOf(IndexOutOfBoundsException.class)
+						.extracting(SpelEvaluationException::getMessageCode).isEqualTo(EXCEPTION_DURING_INDEX_READ);
+				assertCannotCompile(expression);
+
+				// IntLiteral as index --> represented as an int in compiled bytecode,
+				// which does not require unboxing since get(int) method expects an int.
+				// Falls in range [ICONST_0, ICONST_5]
+				expression = parser.parseExpression("[1]");
+				assertCannotCompile(expression);
+
+				assertThat(expression.getValue(context, colors)).isEqualTo(Color.BLUE);
+				assertCanCompile(expression);
+				assertThat(expression.getValue(context, colors)).isEqualTo(Color.BLUE);
+				assertThat(getAst().getExitDescriptor()).isEqualTo(exitTypeDescriptor);
+
+				// IntLiteral as index --> represented as an int in compiled bytecode,
+				// which does not require unboxing since get(int) method expects an int.
+				// Does not fall in range [ICONST_0, ICONST_5]
+				expression = parser.parseExpression("[42]");
+				assertCannotCompile(expression);
+
+				assertThat(expression.getValue(context, colors)).isEqualTo(Color.PURPLE);
+				assertCanCompile(expression);
+				assertThat(expression.getValue(context, colors)).isEqualTo(Color.PURPLE);
+				assertThat(getAst().getExitDescriptor()).isEqualTo(exitTypeDescriptor);
+
+				// Integer variable as index --> represented as an Integer in compiled bytecode,
+				// which requires unboxing from Integer to int since get(int) method expects an int.
+				context.setVariable("colorIndex", 2);
+				expression = parser.parseExpression("[#colorIndex]");
+				assertCannotCompile(expression);
+
+				assertThat(expression.getValue(context, colors)).isEqualTo(Color.GREEN);
+				assertCanCompile(expression);
+				assertThat(expression.getValue(context, colors)).isEqualTo(Color.GREEN);
+				assertThat(getAst().getExitDescriptor()).isEqualTo(exitTypeDescriptor);
+
+				// Reuse expression but change value of colorIndex.
+				context.setVariable("colorIndex", 3);
+
+				assertThat(expression.getValue(context, colors)).isEqualTo(Color.ORANGE);
+				assertCanCompile(expression);
+				assertThat(expression.getValue(context, colors)).isEqualTo(Color.ORANGE);
+				assertThat(getAst().getExitDescriptor()).isEqualTo(exitTypeDescriptor);
+
+				// Set color at index 3.
+				expression.setValue(context, colors, Color.RED);
+				assertCanCompile(expression);
+				assertThat(expression.getValue(context, colors)).isEqualTo(Color.RED);
+				assertThat(getAst().getExitDescriptor()).isEqualTo(exitTypeDescriptor);
+			}
+
+			@Test
+			void indexWithPrimitiveIndexTypeAndReferenceValueTypeAccessedViaList() {
+				String exitTypeDescriptor = CodeFlow.toDescriptor(Color.class);
+
+				StandardEvaluationContext context = new StandardEvaluationContext();
+				context.addIndexAccessor(new ColorsIndexAccessor());
+				context.setVariable("list", List.of(new Colors()));
+
+				expression = parser.parseExpression("#list.get(0)[0]");
+				assertCannotCompile(expression);
+
+				assertThatExceptionOfType(SpelEvaluationException.class)
+						.isThrownBy(() -> expression.getValue(context))
+						.withMessageEndingWith("A problem occurred while attempting to read index '%s' in '%s'",
+								0, Colors.class.getName())
+						.withCauseInstanceOf(IndexOutOfBoundsException.class)
+						.extracting(SpelEvaluationException::getMessageCode).isEqualTo(EXCEPTION_DURING_INDEX_READ);
+				assertCannotCompile(expression);
+
+				// IntLiteral as index --> represented as an int in compiled bytecode,
+				// which does not require unboxing since get(int) method expects an int.
+				expression = parser.parseExpression("#list.get(0)[1]");
+				assertCannotCompile(expression);
+
+				assertThat(expression.getValue(context)).isEqualTo(Color.BLUE);
+				assertCanCompile(expression);
+				assertThat(expression.getValue(context)).isEqualTo(Color.BLUE);
+				assertThat(getAst().getExitDescriptor()).isEqualTo(exitTypeDescriptor);
+
+				// Integer variable as index --> represented as an Integer in compiled bytecode,
+				// which requires unboxing from Integer to int since get(int) method expects an int.
+				context.setVariable("colorIndex", 2);
+				expression = parser.parseExpression("#list.get(0)[#colorIndex]");
+				assertCannotCompile(expression);
+
+				assertThat(expression.getValue(context)).isEqualTo(Color.GREEN);
+				assertCanCompile(expression);
+				assertThat(expression.getValue(context)).isEqualTo(Color.GREEN);
+				assertThat(getAst().getExitDescriptor()).isEqualTo(exitTypeDescriptor);
+
+				// Reuse expression but change value of colorIndex.
+				context.setVariable("colorIndex", 3);
+
+				assertThat(expression.getValue(context)).isEqualTo(Color.ORANGE);
+				assertCanCompile(expression);
+				assertThat(expression.getValue(context)).isEqualTo(Color.ORANGE);
+				assertThat(getAst().getExitDescriptor()).isEqualTo(exitTypeDescriptor);
+			}
+
+			@Test
+			void indexWithReferenceIndexTypeAndPrimitiveValueType() {
+				String exitTypeDescriptor = CodeFlow.toDescriptor(int.class);
+
+				StandardEvaluationContext context = new StandardEvaluationContext();
+				context.addIndexAccessor(new ColorOrdinalsIndexAccessor());
+				context.setVariable("colorOrdinals", new ColorOrdinals());
+				context.setVariable("color", Color.GREEN);
+
+				expression = parser.parseExpression("#colorOrdinals[#color]");
+				assertCannotCompile(expression);
+
+				assertThat(expression.getValue(context)).isEqualTo(Color.GREEN.ordinal());
+				assertCanCompile(expression);
+				assertThat(expression.getValue(context)).isEqualTo(Color.GREEN.ordinal());
+				assertThat(getAst().getExitDescriptor()).isEqualTo(exitTypeDescriptor);
+
+				// Reuse expression but change value of color.
+				context.setVariable("color", Color.BLUE);
+
+				assertThat(expression.getValue(context)).isEqualTo(Color.BLUE.ordinal());
+				assertCanCompile(expression);
+				assertThat(expression.getValue(context)).isEqualTo(Color.BLUE.ordinal());
+				assertThat(getAst().getExitDescriptor()).isEqualTo(exitTypeDescriptor);
+			}
+
+			@ParameterizedTest(name = "{0}")
+			@MethodSource("fruitMapIndexAccessors")
+			void indexWithReferenceIndexTypeAndReferenceValueType(IndexAccessor indexAccessor) {
+				String exitTypeDescriptor = CodeFlow.toDescriptor(String.class);
+
+				StandardEvaluationContext context = new StandardEvaluationContext();
+				context.addIndexAccessor(indexAccessor);
+				context.setVariable("list", List.of(new FruitMap()));
+
+				expression = parser.parseExpression("#list.get(0)[T(example.Color).PURPLE]");
+				assertCannotCompile(expression);
+
+				assertThatExceptionOfType(SpelEvaluationException.class)
+						.isThrownBy(() -> expression.getValue(context))
+						.withMessageEndingWith("A problem occurred while attempting to read index '%s' in '%s'",
+								Color.PURPLE, FruitMap.class.getName())
+						.withCauseInstanceOf(IllegalArgumentException.class)
+						.extracting(SpelEvaluationException::getMessageCode).isEqualTo(EXCEPTION_DURING_INDEX_READ);
+				assertCannotCompile(expression);
+
+				expression = parser.parseExpression("#list[0][T(example.Color).RED]");
+				assertCannotCompile(expression);
+
+				assertThat(expression.getValue(context)).isEqualTo("cherry");
+				assertCanCompile(expression);
+				assertThat(expression.getValue(context)).isEqualTo("cherry");
+				assertThat(getAst().getExitDescriptor()).isEqualTo(exitTypeDescriptor);
+
+				context.setVariable("color", Color.GREEN);
+				expression = parser.parseExpression("#list[0][#color]");
+				assertCannotCompile(expression);
+
+				assertThat(expression.getValue(context)).isEqualTo("kiwi");
+				assertCanCompile(expression);
+				assertThat(expression.getValue(context)).isEqualTo("kiwi");
+				assertThat(getAst().getExitDescriptor()).isEqualTo(exitTypeDescriptor);
+
+				// Reuse expression but change value of color.
+				context.setVariable("color", Color.BLUE);
+
+				assertThat(expression.getValue(context)).isEqualTo("blueberry");
+				assertCanCompile(expression);
+				assertThat(expression.getValue(context)).isEqualTo("blueberry");
+				assertThat(getAst().getExitDescriptor()).isEqualTo(exitTypeDescriptor);
+
+				// Set fruit for purple
+				context.setVariable("color", Color.PURPLE);
+				expression.setValue(context, "plum");
+				assertCanCompile(expression);
+				assertThat(expression.getValue(context)).isEqualTo("plum");
+				assertThat(getAst().getExitDescriptor()).isEqualTo(exitTypeDescriptor);
+			}
+
+			static Stream<Arguments> fruitMapIndexAccessors() {
+				return Stream.of(
+					arguments(named("FruitMapIndexAccessor",
+							new FruitMapIndexAccessor())),
+					arguments(named("ReflectiveIndexAccessor",
+							new ReflectiveIndexAccessor(FruitMap.class, Color.class, "getFruit", "setFruit")))
+				);
+			}
+		}
 	}
 
 	@Nested
@@ -941,6 +1160,73 @@ public class SpelCompilationCoverageTests extends AbstractExpressionTests {
 			assertThat(getAst().getExitDescriptor()).isEqualTo("Ljava/lang/String");
 		}
 
+		@Nested
+		class NullSafeIndexAccessorTests {
+
+			@Test
+			void nullSafeIndexWithReferenceIndexTypeAndPrimitiveValueType() {
+				// Integer instead of int, since null-safe operators can return null.
+				String exitTypeDescriptor = CodeFlow.toDescriptor(Integer.class);
+
+				StandardEvaluationContext context = new StandardEvaluationContext();
+				context.addIndexAccessor(new ColorOrdinalsIndexAccessor());
+				context.setVariable("color", Color.GREEN);
+
+				expression = parser.parseExpression("#colorOrdinals?.[#color]");
+				assertCannotCompile(expression);
+
+				// Cannot compile before the indexed value type is known.
+				assertThat(expression.getValue(context)).isNull();
+				assertCannotCompile(expression);
+				assertThat(expression.getValue(context)).isNull();
+				assertThat(getAst().getExitDescriptor()).isNull();
+
+				context.setVariable("colorOrdinals", new ColorOrdinals());
+
+				assertThat(expression.getValue(context)).isEqualTo(Color.GREEN.ordinal());
+				assertCanCompile(expression);
+				assertThat(expression.getValue(context)).isEqualTo(Color.GREEN.ordinal());
+				assertThat(getAst().getExitDescriptor()).isEqualTo(exitTypeDescriptor);
+
+				// Null-safe support should have been compiled once the indexed value type is known.
+				context.setVariable("colorOrdinals", null);
+				assertThat(expression.getValue(context)).isNull();
+				assertCanCompile(expression);
+				assertThat(expression.getValue(context)).isNull();
+				assertThat(getAst().getExitDescriptor()).isEqualTo(exitTypeDescriptor);
+			}
+
+			@Test
+			void nullSafeIndexWithReferenceIndexTypeAndReferenceValueType() {
+				String exitTypeDescriptor = CodeFlow.toDescriptor(String.class);
+
+				StandardEvaluationContext context = new StandardEvaluationContext();
+				context.addIndexAccessor(new FruitMapIndexAccessor());
+				context.setVariable("color", Color.RED);
+
+				expression = parser.parseExpression("#fruitMap?.[#color]");
+
+				// Cannot compile before the indexed value type is known.
+				assertThat(expression.getValue(context)).isNull();
+				assertCannotCompile(expression);
+				assertThat(expression.getValue(context)).isNull();
+				assertThat(getAst().getExitDescriptor()).isNull();
+
+				context.setVariable("fruitMap", new FruitMap());
+
+				assertThat(expression.getValue(context)).isEqualTo("cherry");
+				assertCanCompile(expression);
+				assertThat(expression.getValue(context)).isEqualTo("cherry");
+				assertThat(getAst().getExitDescriptor()).isEqualTo(exitTypeDescriptor);
+
+				// Null-safe support should have been compiled once the indexed value type is known.
+				context.setVariable("fruitMap", null);
+				assertThat(expression.getValue(context)).isNull();
+				assertCanCompile(expression);
+				assertThat(expression.getValue(context)).isNull();
+				assertThat(getAst().getExitDescriptor()).isEqualTo(exitTypeDescriptor);
+			}
+		}
 	}
 
 	@Nested
@@ -1041,29 +1327,6 @@ public class SpelCompilationCoverageTests extends AbstractExpressionTests {
 			result = expression.getValue(context, privateSubclass, Integer.class);
 			assertThat(result).isEqualTo(2);
 		}
-
-		private interface PrivateInterface {
-
-			String getMessage();
-		}
-
-		private static class PrivateSubclass extends PublicSuperclass implements PublicInterface, PrivateInterface {
-
-			@Override
-			public int getNumber() {
-				return 2;
-			}
-
-			@Override
-			public String getText() {
-				return "enigma";
-			}
-
-			@Override
-			public String getMessage() {
-				return "hello";
-			}
-		}
 	}
 
 	@Nested
@@ -1094,7 +1357,7 @@ public class SpelCompilationCoverageTests extends AbstractExpressionTests {
 		@Test
 		void packagePrivateSubclassOverridesMethodInPrivateInterface() {
 			expression = parser.parseExpression("greet('Jane')");
-			PrivateSubclass privateSubclass = new PrivateSubclass();
+			LocalPrivateSubclass privateSubclass = new LocalPrivateSubclass();
 
 			// Prerequisite: type must not be public for this use case.
 			assertNotPublic(privateSubclass.getClass());
@@ -1110,7 +1373,7 @@ public class SpelCompilationCoverageTests extends AbstractExpressionTests {
 		@Test
 		void privateSubclassOverridesMethodInPublicSuperclass() {
 			expression = parser.parseExpression("process(2)");
-			PrivateSubclass privateSubclass = new PrivateSubclass();
+			LocalPrivateSubclass privateSubclass = new LocalPrivateSubclass();
 
 			// Prerequisite: type must not be public for this use case.
 			assertNotPublic(privateSubclass.getClass());
@@ -1123,12 +1386,14 @@ public class SpelCompilationCoverageTests extends AbstractExpressionTests {
 			assertThat(result).isEqualTo(2 * 2);
 		}
 
-		private interface PrivateInterface {
+		// Cannot be named PrivateInterface due to issues with the Kotlin compiler.
+		private interface LocalPrivateInterface {
 
 			String greet(String name);
 		}
 
-		private static class PrivateSubclass extends PublicSuperclass implements PrivateInterface {
+		// Cannot be named PrivateSubclass due to issues with the Kotlin compiler.
+		private static class LocalPrivateSubclass extends PublicSuperclass implements LocalPrivateInterface {
 
 			@Override
 			public int process(int num) {
@@ -1139,6 +1404,61 @@ public class SpelCompilationCoverageTests extends AbstractExpressionTests {
 			public String greet(String name) {
 				return "Hello, " + name;
 			}
+		}
+	}
+
+	@Nested
+	class ReflectiveIndexAccessorVisibilityTests {
+
+		@Test
+		void privateSubclassOverridesIndexReadMethodInPublicInterface() {
+			PrivateSubclass privateSubclass = new PrivateSubclass();
+			Class<?> targetType = privateSubclass.getClass();
+			assertNotPublic(targetType);
+
+			context.addIndexAccessor(new ReflectiveIndexAccessor(targetType, int.class, "getFruit"));
+			expression = parser.parseExpression("[1]");
+
+			String result = expression.getValue(context, privateSubclass, String.class);
+			assertThat(result).isEqualTo("fruit-1");
+
+			assertCanCompile(expression);
+			result = expression.getValue(context, privateSubclass, String.class);
+			assertThat(result).isEqualTo("fruit-1");
+		}
+
+		@Test
+		void privateSubclassOverridesIndexReadMethodInPrivateInterface() {
+			PrivateSubclass privateSubclass = new PrivateSubclass();
+			Class<?> targetType = privateSubclass.getClass();
+			assertNotPublic(targetType);
+
+			context.addIndexAccessor(new ReflectiveIndexAccessor(targetType, int.class, "getIndex"));
+			expression = parser.parseExpression("[1]");
+
+			String result = expression.getValue(context, privateSubclass, String.class);
+			assertThat(result).isEqualTo("value-1");
+
+			assertCanCompile(expression);
+			result = expression.getValue(context, privateSubclass, String.class);
+			assertThat(result).isEqualTo("value-1");
+		}
+
+		@Test
+		void privateSubclassOverridesIndexReadMethodInPublicSuperclass() {
+			PrivateSubclass privateSubclass = new PrivateSubclass();
+			Class<?> targetType = privateSubclass.getClass();
+			assertNotPublic(targetType);
+
+			context.addIndexAccessor(new ReflectiveIndexAccessor(targetType, int.class, "getIndex2"));
+			expression = parser.parseExpression("[2]");
+
+			String result = expression.getValue(context, privateSubclass, String.class);
+			assertThat(result).isEqualTo("sub-4"); // 2 * 2
+
+			assertCanCompile(expression);
+			result = expression.getValue(context, privateSubclass, String.class);
+			assertThat(result).isEqualTo("sub-4"); // 2 * 2
 		}
 	}
 
@@ -4674,9 +4994,20 @@ public class SpelCompilationCoverageTests extends AbstractExpressionTests {
 		assertThat(tc.s).isEqualTo("aaabbbccc");
 		tc.reset();
 
+		expression = parser.parseExpression("sixteen(seventeen)");
+		assertCannotCompile(expression);
+		expression.getValue(tc);
+		assertThat(tc.s).isEqualTo("aaabbbccc");
+		assertCanCompile(expression);
+		tc.reset();
+		// see TODO below
+		// expression.getValue(tc);
+		// assertThat(tc.s).isEqualTo("aaabbbccc");
+		// tc.reset();
+
 		// TODO Determine why the String[] is passed as the first element of the Object... varargs array instead of the entire varargs array.
 		// expression = parser.parseExpression("sixteen(stringArray)");
-		// assertCantCompile(expression);
+		// assertCannotCompile(expression);
 		// expression.getValue(tc);
 		// assertThat(tc.s).isEqualTo("aaabbbccc");
 		// assertCanCompile(expression);
@@ -5374,7 +5705,7 @@ public class SpelCompilationCoverageTests extends AbstractExpressionTests {
 	void variantGetter() {
 		Payload2Holder holder = new Payload2Holder();
 		StandardEvaluationContext ctx = new StandardEvaluationContext();
-		ctx.addPropertyAccessor(new MyAccessor());
+		ctx.addPropertyAccessor(new MyPropertyAccessor());
 		expression = parser.parseExpression("payload2.var1");
 		Object v = expression.getValue(ctx,holder);
 		assertThat(v).isEqualTo("abc");
@@ -6026,7 +6357,7 @@ public class SpelCompilationCoverageTests extends AbstractExpressionTests {
 	}
 
 
-	static class MyAccessor implements CompilablePropertyAccessor {
+	static class MyPropertyAccessor implements CompilablePropertyAccessor {
 
 		private Method method;
 
@@ -6528,6 +6859,10 @@ public class SpelCompilationCoverageTests extends AbstractExpressionTests {
 				}
 			}
 		}
+
+		public String[] seventeen() {
+			return new String[] { "aaa", "bbb", "ccc" };
+		}
 	}
 
 
@@ -6954,6 +7289,41 @@ public class SpelCompilationCoverageTests extends AbstractExpressionTests {
 		}
 	}
 
+	private interface PrivateInterface {
+
+		String getMessage();
+
+		String getIndex(int index);
+	}
+
+	private static class PrivateSubclass extends PublicSuperclass implements PublicInterface, PrivateInterface {
+
+		@Override
+		public int getNumber() {
+			return 2;
+		}
+
+		@Override
+		public String getText() {
+			return "enigma";
+		}
+
+		@Override
+		public String getMessage() {
+			return "hello";
+		}
+
+		@Override
+		public String getIndex2(int index) {
+			return "sub-" + (2 * index);
+		}
+
+		@Override
+		public String getFruit(int index) {
+			return "fruit-" + index;
+		}
+	}
+
 	// Must be public with public fields/properties.
 	public static class RootContextWithIndexedProperties {
 		public int[] intArray;
@@ -6963,6 +7333,133 @@ public class SpelCompilationCoverageTests extends AbstractExpressionTests {
 		public String string;
 		public Map<String, Integer> map;
 		public Person person;
+	}
+
+	/**
+	 * Type that can be indexed by an int or an Integer and whose indexed values
+	 * are enums.
+	 */
+	public static class Colors {
+
+		private final Map<Integer, Color> map = new HashMap<>();
+
+		{
+			this.map.put(1, Color.BLUE);
+			this.map.put(2, Color.GREEN);
+			this.map.put(3, Color.ORANGE);
+			this.map.put(42, Color.PURPLE);
+		}
+
+		public Color get(int index) {
+			if (!this.map.containsKey(index)) {
+				throw new IndexOutOfBoundsException("No color for index " + index);
+			}
+			return this.map.get(index);
+		}
+
+		public void set(int index, Color color) {
+			this.map.put(index, color);
+		}
+	}
+
+	/**
+	 * {@link CompilableIndexAccessor} that knows how to index into {@link Colors}.
+	 */
+	private static class ColorsIndexAccessor extends ReflectiveIndexAccessor {
+
+		ColorsIndexAccessor() {
+			super(Colors.class, int.class, "get", "set");
+		}
+	}
+
+	/**
+	 * Type that can be indexed by an enum and whose indexed values are primitive
+	 * integers.
+	 */
+	public static class ColorOrdinals {
+
+		public int get(Color color) {
+			return color.ordinal();
+		}
+	}
+
+	/**
+	 * {@link CompilableIndexAccessor} that knows how to index into {@link ColorOrdinals}.
+	 */
+	private static class ColorOrdinalsIndexAccessor extends ReflectiveIndexAccessor {
+
+		ColorOrdinalsIndexAccessor() {
+			super(ColorOrdinals.class, Color.class, "get");
+		}
+	}
+
+	/**
+	 * Manually implemented {@link CompilableIndexAccessor} that knows how to
+	 * index into {@link FruitMap} for reading, writing, and compilation.
+	 */
+	private static class FruitMapIndexAccessor implements CompilableIndexAccessor {
+
+		private final Method method = ReflectionUtils.findMethod(FruitMap.class, "getFruit", Color.class);
+
+		private final String targetTypeDesc = CodeFlow.toDescriptor(FruitMap.class);
+
+		private final String classDesc = this.targetTypeDesc.substring(1);
+
+		private final String methodDescr = CodeFlow.createSignatureDescriptor(this.method);
+
+
+		@Override
+		public Class<?>[] getSpecificTargetClasses() {
+			return new Class<?>[] { FruitMap.class };
+		}
+
+		@Override
+		public boolean canRead(EvaluationContext context, Object target, Object index) {
+			return (target instanceof FruitMap && index instanceof Color);
+		}
+
+		@Override
+		public TypedValue read(EvaluationContext context, Object target, Object index) {
+			FruitMap fruitMap = (FruitMap) target;
+			Color color = (Color) index;
+			return new TypedValue(fruitMap.getFruit(color));
+		}
+
+		@Override
+		public boolean canWrite(EvaluationContext context, Object target, Object index) {
+			return canRead(context, target, index);
+		}
+
+		@Override
+		public void write(EvaluationContext context, Object target, Object index, @Nullable Object newValue) {
+			FruitMap fruitMap = (FruitMap) target;
+			Color color = (Color) index;
+			String fruit = String.valueOf(newValue);
+			fruitMap.setFruit(color, fruit);
+		}
+
+		@Override
+		public boolean isCompilable() {
+			return true;
+		}
+
+		@Override
+		public Class<?> getIndexedValueType() {
+			return String.class;
+		}
+
+		@Override
+		public void generateCode(SpelNode index, MethodVisitor mv, CodeFlow cf) {
+			String lastDesc = cf.lastDescriptor();
+			// Ensure the current object on the stack is the target type.
+			if (lastDesc == null || !lastDesc.equals(this.targetTypeDesc)) {
+				CodeFlow.insertCheckCast(mv, this.targetTypeDesc);
+			}
+			// Push the index onto the stack.
+			cf.generateCodeForArgument(mv, index, Color.class);
+			// Invoke the read-method.
+			mv.visitMethodInsn(INVOKEVIRTUAL, this.classDesc, this.method.getName(), this.methodDescr, false);
+		}
 	}
 
 }
